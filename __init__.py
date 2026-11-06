@@ -20,7 +20,9 @@ QUOTE = {
         "Quoter on the user's OWN RPC (BLAZEPHOENIX_RPC_<CHAIN>), decoded and cross-checked locally. Returns the net "
         "output after the fee, the on-chain minimum, price impact and the Phoenix Check verdict (ok / caution / "
         "danger / blocked; respect blocked). With recipient it also returns UNSIGNED Router calldata that has already "
-        "been verified field by field (router, amount, recipient, minimum, deadline, route). It never signs or sends."
+        "been verified field by field (router, amount, recipient, minimum, deadline, route); its 'verification' field is "
+        "that check, so do not re-run it by copying the calldata. Native ETH must be wrapped to WETH first. It never "
+        "signs or sends."
     ),
     "parameters": {
         "type": "object",
@@ -41,7 +43,8 @@ QUOTE = {
 VERIFY = {
     "name": "blazephoenix_verify_calldata",
     "description": (
-        "Check unsigned BlazePhoenix Router calldata from any source before it is signed. Pure and offline: decodes the "
+        "Check unsigned BlazePhoenix Router calldata that came from somewhere else (another agent, an app, a pasted "
+        "transaction) before it is signed; blazephoenix_quote already verifies its own. Pure and offline: decodes the "
         "swapExactIn call and refuses it unless the target is the pinned Router, the encoding is canonical, and the "
         "amount, recipient, minimum output, deadline and route all match what the user asked for."
     ),
