@@ -1,0 +1,30 @@
+name: blazephoenix
+version: "1.0.0"
+description: "BlazePhoenix swap quotes measured on your own RPC and verified locally: net output, Phoenix Check verdict and field-by-field verified unsigned calldata. Never signs, never holds keys."
+author: Mitra
+license: MIT
+homepage: https://blazephoenix.xyz
+manifest_version: 2
+requires_hermes: ">=0.23.0"
+tags: [defi, swap, quotes, ethereum, base]
+provides_tools:
+  - blazephoenix_quote
+  - blazephoenix_verify_calldata
+  - blazephoenix_chains
+requires_env:
+  - name: BLAZEPHOENIX_RPC_BASE
+    description: "Your own Base RPC URL (any provider). Quotes run as an eth_call on this node; it is never sent to BlazePhoenix."
+    secret: true
+optional_env:
+  - name: BLAZEPHOENIX_RPC_ETHEREUM
+    description: "Your own Ethereum RPC URL"
+    secret: true
+  - name: BLAZEPHOENIX_RPC_OPTIMISM
+    description: "Your own Optimism RPC URL"
+    secret: true
+  - name: BLAZEPHOENIX_RPC_ARBITRUM
+    description: "Your own Arbitrum RPC URL"
+    secret: true
+  - name: BLAZEPHOENIX_RPC_ROBINHOOD
+    description: "Your own Robinhood Chain RPC URL"
+    secret: true
