@@ -29,6 +29,9 @@ MUTANTS = {
     "M18 caution threshold": ("impact >= CAUTION_IMPACT_BPS", "impact > CAUTION_IMPACT_BPS"),
     "M19 prepare not checked": ('raise BPError("prepare_mismatch"', 'pass  # BPError("prepare_mismatch"'),
     "M20 decode not cross-checked": ('raise BPError("decode_mismatch"', 'pass  # BPError("decode_mismatch"'),
+    "M22 BZPX refusal dropped": ('    if s.upper() == "BZPX":\n        raise', '    if False:\n        raise'),
+    "M23 BZPX address put back": ('USDC="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")),',
+                                  'USDC="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", BZPX="0x' + "00" * 19 + '01")),'),
     "M21 URL echoed in errors": ("{'your RPC' if secret else urllib.parse.urlsplit(url).netloc}", "{url}"),
 }
 

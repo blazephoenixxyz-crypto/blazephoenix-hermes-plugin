@@ -242,6 +242,20 @@ def test_inputs():
     assert bp._uint(str((1 << 256) - 1), "x") == (1 << 256) - 1
 
 
+def test_bzpx_coming_soon():
+    """BZPX: coming soon. The symbol is refused on every chain, in any case, and no BZPX address
+    is in the plugin. Red under M22 (refusal dropped) and M23 (an address put back)."""
+    for cid in bp.CHAINS:
+        for sym in ("BZPX", "bzpx", " Bzpx "):
+            with pytest.raises(bp.BPError) as e:
+                bp.resolve_token(cid, sym)
+            assert e.value.code == "bad_request"
+            assert "BZPX: coming soon" in str(e.value) and "pass a token address" in str(e.value)
+        assert "BZPX" not in bp.CHAINS[cid]["tokens"]
+    src = (ROOT / "bp.py").read_text() + (ROOT / "__init__.py").read_text()
+    assert not __import__("re").search(r"BZPX\s*=\s*\"0x", src, __import__("re").I)
+
+
 def test_missing_rpc_fails_closed(monkeypatch):
     monkeypatch.delenv("BLAZEPHOENIX_RPC_OPTIMISM", raising=False)
     with pytest.raises(bp.BPError) as e:

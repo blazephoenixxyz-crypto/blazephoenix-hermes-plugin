@@ -29,8 +29,7 @@ CHAINS = {
     8453: dict(key="BASE", name="Base", router="0x2a779f9Be49aac57495A8B6467Cc325a8a47Eb9f",
                quoter="0x4cEF0615614B212895F45Aa1D4833B16666E18d3",
                tokens=dict(WETH="0x4200000000000000000000000000000000000006",
-                           USDC="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-                           BZPX="0x053D75c00FdD571538492e3B1686Bd963a0911A7")),
+                           USDC="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")),
     1: dict(key="ETHEREUM", name="Ethereum", router="0xE1aE5f49013920CF71De8CED4043e14C4d63416b",
             quoter="0x4a20AA0912388ff7A9221Ab6BFC224cc20Baa0c3",
             tokens=dict(WETH="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
@@ -181,6 +180,8 @@ def resolve_token(cid: int, t: str) -> str:
     s = str(t).strip()
     if s.upper() == "ETH":
         raise BPError("wrap_required", "the 1.x Router trades ERC-20 tokens: wrap ETH to WETH and quote WETH")
+    if s.upper() == "BZPX":
+        raise BPError("bad_request", "BZPX: coming soon — the token address is not published yet; pass a token address")
     sym = CHAINS[cid]["tokens"].get(s.upper())
     return (sym or _addr(s, "token")).lower()
 
