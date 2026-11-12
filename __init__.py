@@ -10,7 +10,7 @@ except ImportError:  # imported standalone by a test runner
     import bp
 
 _CHAIN = {"type": "string", "description": "base (default) | eth | optimism | arbitrum | robinhood, or a chain id"}
-_TOKEN = "a 0x token address, or one of the symbols WETH, USDC (not on Robinhood), BZPX (Base only) or USDG (Robinhood only). Never guess an address for another ticker: ask the user."
+_TOKEN = "a 0x token address, or one of the symbols WETH, USDC (not on Robinhood) or USDG (Robinhood only). BZPX: coming soon (its address is not published yet; the symbol is refused). Never guess an address for another ticker: ask the user."
 _ADDR = {"type": "string", "description": "0x address"}
 
 QUOTE = {
