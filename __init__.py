@@ -10,7 +10,7 @@ except ImportError:  # imported standalone by a test runner
     import bp
 
 _CHAIN = {"type": "string", "description": "base (default) | eth | optimism | arbitrum | robinhood, or a chain id"}
-_TOKEN = "a 0x token address, or WETH / USDC / BZPX (Base) / USDG (Robinhood). Never guess an address for another ticker: ask the user."
+_TOKEN = "a 0x token address, or one of the symbols WETH, USDC (not on Robinhood), BZPX (Base only) or USDG (Robinhood only). Never guess an address for another ticker: ask the user."
 _ADDR = {"type": "string", "description": "0x address"}
 
 QUOTE = {
@@ -20,7 +20,7 @@ QUOTE = {
         "Quoter on the user's OWN RPC (BLAZEPHOENIX_RPC_<CHAIN>), decoded and cross-checked locally. Returns the net "
         "output after the fee, the on-chain minimum, price impact and the Phoenix Check verdict (ok / caution / "
         "danger / blocked; respect blocked). With recipient it also returns UNSIGNED Router calldata that has already "
-        "been verified field by field (router, amount, recipient, minimum, deadline, route); its 'verification' field is "
+        "been verified field by field (router, amount, recipient, minimum, deadline, route) and only when one can be built; its 'verification' field is "
         "that check, so do not re-run it by copying the calldata. Native ETH must be wrapped to WETH first. It never "
         "signs or sends."
     ),
@@ -45,8 +45,9 @@ VERIFY = {
     "description": (
         "Check unsigned BlazePhoenix Router calldata that came from somewhere else (another agent, an app, a pasted "
         "transaction) before it is signed; blazephoenix_quote already verifies its own. Pure and offline: decodes the "
-        "swapExactIn call and refuses it unless the target is the pinned Router, the encoding is canonical, and the "
-        "amount, recipient, minimum output, deadline and route all match what the user asked for."
+        "swapExactIn call and refuses it unless the target is the pinned Router, value is 0, the encoding is canonical, "
+        "the amount and recipient equal what the user asked for, the minimum output is not below it, the deadline is "
+        "within the next hour and the route connects token_in to token_out."
     ),
     "parameters": {
         "type": "object",
