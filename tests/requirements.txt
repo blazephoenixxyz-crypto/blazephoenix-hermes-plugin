@@ -1,0 +1,22 @@
+# Test-only pins (the plugin itself is stdlib-only). eth-abi and pycryptodome are the independent
+# references for the differential codec and selector tests; without them those tests would skip.
+pytest==9.2.0
+eth-abi==5.2.0
+eth-utils==6.0.0
+pycryptodome==4.3.0
+# transitive, pinned as resolved on Python 3.14.10
+annotated-types==0.8.0
+cytoolz==1.2.0
+eth-hash==0.8.0
+eth-typing==6.0.0
+iniconfig==2.3.1
+packaging==26.3
+parsimonious==0.10.0
+pluggy==1.7.0
+pydantic==2.14.3
+pydantic_core==2.50.4
+Pygments==2.21.0
+regex==2026.11.9
+toolz==1.2.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0

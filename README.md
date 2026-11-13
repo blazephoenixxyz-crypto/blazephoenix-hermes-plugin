@@ -46,12 +46,12 @@ The Router also enforces the minimum output on-chain: a worse fill reverts.
 ## Tests
 
 ```bash
-python -m pytest            # 229 offline tests: ABI codec vs eth-abi, selectors, verification, Phoenix Check
+python -m pytest            # 230 offline tests: ABI codec vs eth-abi, selectors, verification, Phoenix Check
 BLAZEPHOENIX_RPC_BASE=<your Base node> python -m pytest   # + 9 live tests on Base, including a lying-server suite
 python tests/mutants.py     # 21 code mutants, each must turn the suite red
 ```
 
-Offline tests need `pytest`; the differential codec and selector tests also use `eth-abi` and `pycryptodome` when installed (test-only).
+Offline tests need the test-only pins in `tests/requirements.txt` (`pytest`, plus `eth-abi` and `pycryptodome` for the differential codec and selector tests, which skip when they are missing). The Hermes host module `agent.secret_scope` is stubbed in `tests/conftest.py` when no host is installed.
 
 ## Links
 

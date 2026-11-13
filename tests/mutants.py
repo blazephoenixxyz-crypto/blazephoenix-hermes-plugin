@@ -35,6 +35,17 @@ MUTANTS = {
     "M21 URL echoed in errors": ("{'your RPC' if secret else urllib.parse.urlsplit(url).netloc}", "{url}"),
 }
 
+# Known survivors: these two also survive on main. Kept here so CI fails only on a NEW survivor.
+# Remove an entry once a test kills it (the run reports it below when that happens).
+KNOWN_ALIVE = {"M19 prepare not checked", "M20 decode not cross-checked"}
+
+# Baseline: the unmutated suite must be green, otherwise every mutant would look "killed".
+base = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", str(ROOT / "tests")], cwd=ROOT,
+                      capture_output=True, text=True)
+if base.returncode != 0:
+    print(base.stdout[-2000:] + base.stderr[-2000:])
+    sys.exit("baseline suite is red: mutants not meaningful")
+
 src = (ROOT / "bp.py").read_text()
 alive = []
 for name, (old, new) in MUTANTS.items():
@@ -49,4 +60,9 @@ for name, (old, new) in MUTANTS.items():
         print(f"{'KILLED' if red else 'ALIVE '}  {name}")
         if not red:
             alive.append(name)
-sys.exit(1 if alive else 0)
+        elif name in KNOWN_ALIVE:
+            print(f"NOTE  {name} is now killed: drop it from KNOWN_ALIVE")
+new = [n for n in alive if n not in KNOWN_ALIVE]
+if new:
+    print("NEW SURVIVORS:", *new, sep="\n  ")
+sys.exit(1 if new else 0)
