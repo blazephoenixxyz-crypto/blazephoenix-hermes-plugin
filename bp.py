@@ -347,7 +347,11 @@ def quote(chain, token_in: str, token_out: str, amount_in, recipient: str | None
                          "agree": local == (dec.get("checks") or {}).get("verdict")},
         "measuredOn": f"your RPC (BLAZEPHOENIX_RPC_{CHAINS[cid]['key']}), Quoter {CHAINS[cid]['quoter']}",
     }
-    if dec.get("tx"):
+    if dec.get("tx") and not pv["canExecute"]:
+        # Your node measured this route as not executable: its answer outranks the hosted decode.
+        out["txError"] = {"code": "not_executable",
+                          "message": "your node says this route cannot execute now: no transaction is returned"}
+    elif dec.get("tx"):
         out["verification"] = verify_swap(cid, dec["tx"], token_in=tin, token_out=tout, amount_in=amt,
                                           recipient=rcp, min_out=mn, deadline=int(req["deadline"]),
                                           route=pv["route"], approval=dec.get("approval"))

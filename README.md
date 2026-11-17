@@ -11,7 +11,7 @@ Swap quotes from [BlazePhoenix](https://blazephoenix.xyz), the fully on-chain DE
 
 | Tool | What it does | Network |
 |---|---|---|
-| `blazephoenix_quote` | Net output after the fee, on-chain minimum, price impact, Phoenix Check verdict (`ok` / `caution` / `danger` / `blocked`). With `recipient`, also verified unsigned calldata and the exact ERC-20 approval. | your RPC + blazephoenix.xyz |
+| `blazephoenix_quote` | Net output after the fee, on-chain minimum, price impact, Phoenix Check verdict (`ok` / `caution` / `danger` / `blocked`). With `recipient`, also verified unsigned calldata and the exact ERC-20 approval, only when your node measures the route as executable (`canExecute`); otherwise `txError` `not_executable`. | your RPC + blazephoenix.xyz |
 | `blazephoenix_verify_calldata` | Checks `swapExactIn` calldata from any source: pinned Router, canonical encoding, `value` 0, and amount and recipient equal to what the user asked for, minimum output not below it, deadline within the next hour, route connecting the two tokens. Pure and offline. | none |
 | `blazephoenix_chains` | Chains, pinned Router and Quoter addresses, token symbols, and whether an RPC is set (the URL is never shown). | none |
 
@@ -46,9 +46,9 @@ The Router also enforces the minimum output on-chain: a worse fill reverts.
 ## Tests
 
 ```bash
-python -m pytest            # 230 offline tests: ABI codec vs eth-abi, selectors, verification, Phoenix Check
+python -m pytest            # 240 offline tests: ABI codec vs eth-abi, selectors, verification, Phoenix Check
 BLAZEPHOENIX_RPC_BASE=<your Base node> python -m pytest   # + 9 live tests on Base, including a lying-server suite
-python tests/mutants.py     # 21 code mutants, each must turn the suite red
+python tests/mutants.py     # 25 code mutants, each must turn the suite red
 ```
 
 Offline tests need the test-only pins in `tests/requirements.txt` (`pytest`, plus `eth-abi` and `pycryptodome` for the differential codec and selector tests, which skip when they are missing). The Hermes host module `agent.secret_scope` is stubbed in `tests/conftest.py` when no host is installed.

@@ -32,6 +32,8 @@ MUTANTS = {
     "M22 BZPX refusal dropped": ('    if s.upper() == "BZPX":\n        raise', '    if False:\n        raise'),
     "M23 BZPX address put back": ('USDC="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")),',
                                   'USDC="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", BZPX="0x' + "00" * 19 + '01")),'),
+    "M24 node canExecute gate dropped": ('if dec.get("tx") and not pv["canExecute"]:', 'if False:'),
+    "M25 node gate withholds every tx": ('if dec.get("tx") and not pv["canExecute"]:', 'if dec.get("tx"):'),
     "M21 URL echoed in errors": ("{'your RPC' if secret else urllib.parse.urlsplit(url).netloc}", "{url}"),
 }
 
