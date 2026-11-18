@@ -11,7 +11,7 @@ Swap quotes from [BlazePhoenix](https://blazephoenix.xyz), the fully on-chain DE
 
 | Tool | What it does | Network |
 |---|---|---|
-| `blazephoenix_quote` | Net output after the fee, on-chain minimum, price impact, Phoenix Check verdict (`ok` / `caution` / `danger` / `blocked`). With `recipient`, also verified unsigned calldata and the exact ERC-20 approval, only when your node measures the route as executable (`canExecute`); otherwise `txError` `not_executable`. | your RPC + blazephoenix.xyz |
+| `blazephoenix_quote` | Net output after the fee, on-chain minimum, price impact, Phoenix Check verdict (`ok` / `caution` / `danger` / `blocked`). With `recipient`, also verified unsigned calldata and the exact ERC-20 approval, only when your node measures the route as executable (`canExecute`). When the plugin withholds a hosted transaction for that reason, it returns `txError` `not_executable`; otherwise any `txError` is the hosted one. | your RPC + blazephoenix.xyz |
 | `blazephoenix_verify_calldata` | Checks `swapExactIn` calldata from any source: pinned Router, canonical encoding, `value` 0, and amount and recipient equal to what the user asked for, minimum output not below it, deadline within the next hour, route connecting the two tokens. Pure and offline. | none |
 | `blazephoenix_chains` | Chains, pinned Router and Quoter addresses, token symbols, and whether an RPC is set (the URL is never shown). | none |
 
