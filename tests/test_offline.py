@@ -273,3 +273,43 @@ def test_network_errors_never_echo_the_rpc_url(monkeypatch):
 def test_non_canonical_encoding_is_refused():  # mutant: M8 (canonical check dropped)
     """Trailing bytes after a valid call decode fine in a lax decoder; they are refused here."""
     refused({**FX["tx"], "data": FX["tx"]["data"] + "00" * 32})
+
+
+# ---- quote: the node's canExecute gates the transaction ---------------------------------------
+
+def _quote(monkeypatch, *, can_execute, min_out, hosted_verdict, server):
+    """quote() with the network replaced: the node returns the fixture preview with canExecute set,
+    and the hosted decode is either honest (txError, no tx) or a liar (a coherent tx anyway)."""
+    pv = copy.deepcopy(PV)
+    pv["canExecute"] = can_execute
+    dec = {"ok": True, "checks": {"verdict": hosted_verdict}, "approval": FX["approval"]}
+    if server == "liar" or can_execute:
+        dec["tx"] = dict(FX["tx"])
+    else:
+        dec["txError"] = {"code": "not_executable", "message": "route cannot execute now"}
+    monkeypatch.setenv("BLAZEPHOENIX_RPC_BASE", "https://node.invalid")
+    monkeypatch.setattr(bp, "rpc", lambda url, method, params: hex(8453))
+    monkeypatch.setattr(bp, "_round", lambda *a: (REQ, pv, dec))
+    monkeypatch.setattr(bp.time, "time", lambda: NOW)
+    return bp.quote("base", TIN, TOUT, str(AMT), recipient=RCP, min_out=min_out)
+
+
+@pytest.mark.parametrize("server", ["honest", "liar"])
+@pytest.mark.parametrize("hosted_verdict", ["ok", "blocked"])
+@pytest.mark.parametrize("min_out", [str(MIN), None])
+def test_quote_withholds_tx_when_node_says_blocked(monkeypatch, min_out, hosted_verdict, server):
+    """canExecute measured on the user's node outranks the hosted decode: no unsigned tx, no
+    verification, txError not_executable, the quote itself still returned. Red under M24."""
+    out = _quote(monkeypatch, can_execute=False, min_out=min_out, hosted_verdict=hosted_verdict, server=server)
+    assert "unsignedTx" not in out and "verification" not in out and "approval" not in out
+    assert out["txError"]["code"] == "not_executable"
+    assert out["canExecute"] is False and out["phoenixCheck"]["verdict"] == "blocked"
+    assert out["amountOut"] == str(PV["netOut"])
+
+
+@pytest.mark.parametrize("hosted_verdict", ["ok", "blocked"])
+def test_quote_returns_verified_tx_when_node_says_executable(monkeypatch, hosted_verdict):
+    """Control: with canExecute true on the node the verified unsigned tx is returned. Red under M25."""
+    out = _quote(monkeypatch, can_execute=True, min_out=str(MIN), hosted_verdict=hosted_verdict, server="honest")
+    assert out["verification"]["ok"] and out["unsignedTx"]["chainId"] == 8453
+    assert "txError" not in out
