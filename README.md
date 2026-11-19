@@ -13,6 +13,7 @@ Swap quotes from [BlazePhoenix](https://blazephoenix.xyz), the fully on-chain DE
 |---|---|---|
 | `blazephoenix_quote` | Net output after the fee, on-chain minimum, price impact, Phoenix Check verdict (`ok` / `caution` / `danger` / `blocked`). With `recipient`, also verified unsigned calldata and the exact ERC-20 approval, only when your node measures the route as executable (`canExecute`). When the plugin withholds a hosted transaction for that reason, it returns `txError` `not_executable`; otherwise any `txError` is the hosted one. | your RPC + blazephoenix.xyz |
 | `blazephoenix_verify_calldata` | Checks `swapExactIn` calldata from any source: pinned Router, canonical encoding, `value` 0, and amount and recipient equal to what the user asked for, minimum output not below it, deadline within the next hour, route connecting the two tokens. Pure and offline. | none |
+| `blazephoenix_usd_value` | What an amount of a token is worth in the chain's dollar token (USDC; USDG on Robinhood Chain), which is taken as exactly 1 USD. The pinned Quoter (`previewPlan`) prices the token directly and through WETH and through the tokens its direct route touches (at most 8 vias, each at most 2 token hops), all inside one Multicall3 `aggregate3` eth_call pinned to one block (a second, block-pinned call only when the route adds tokens). The value is the least of the measured vias: the net output actually received for the amount after the 0.28% fee, including price impact; a leg X -> dollar is priced at the amount of X the route moves (`scaledFrom`) and scaled linearly, so its impact is the impact at that amount. A via that fails, routes nothing or returns 0 is `not measured`, never 0; with no measured via the value is `not measured`. Returns the label (e.g. `USD (via USDC)`), block, every via with its legs, and the spread between vias (`bps`), with no threshold or verdict. | your RPC only |
 | `blazephoenix_chains` | Chains, pinned Router and Quoter addresses, token symbols, and whether an RPC is set (the URL is never shown). | none |
 
 Chains: Base, Ethereum, Optimism, Arbitrum, Robinhood Chain (protocol 1.0.0). Amounts are in base units. Native ETH: wrap to WETH first (the 1.0.0 Router trades ERC-20 tokens).
@@ -40,15 +41,15 @@ The Router also enforces the minimum output on-chain: a worse fill reverts.
 
 ## What the plugin does on your machine
 
-- Network: HTTPS to `blazephoenix.xyz` (prepare and decode: token addresses, amount, recipient, minimum; never your RPC URL) and JSON-RPC `eth_chainId` / `eth_call` to the RPC URL you set. Nothing else.
+- Network: HTTPS to `blazephoenix.xyz` (prepare and decode: token addresses, amount, recipient, minimum; never your RPC URL) and JSON-RPC `eth_chainId` / `eth_call` to the RPC URL you set (`blazephoenix_usd_value` calls the Quoter through Multicall3 `0xcA11bde05977b3631167028862bE2a173976CA11` on your node and nothing else). Nothing else.
 - No shell commands, no background processes, no files read or written, no telemetry, no stored credentials beyond the RPC URL you give Hermes.
 
 ## Tests
 
 ```bash
-python -m pytest            # 240 offline tests: ABI codec vs eth-abi, selectors, verification, Phoenix Check
-BLAZEPHOENIX_RPC_BASE=<your Base node> python -m pytest   # + 9 live tests on Base, including a lying-server suite
-python tests/mutants.py     # 25 code mutants, each must turn the suite red
+python -m pytest            # 380 offline tests: ABI codec vs eth-abi, selectors, verification, Phoenix Check, USD value
+BLAZEPHOENIX_RPC_BASE=<your Base node> python -m pytest   # + 11 live tests on Base, including a lying-server suite
+python tests/mutants.py     # 47 code mutants, each must turn the suite red
 ```
 
 Offline tests need the test-only pins in `tests/requirements.txt` (`pytest`, plus `eth-abi` and `pycryptodome` for the differential codec and selector tests, which skip when they are missing). The Hermes host module `agent.secret_scope` is stubbed in `tests/conftest.py` when no host is installed.
