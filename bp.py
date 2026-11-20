@@ -227,19 +227,28 @@ def rpc_url(cid: int) -> str:
     return url
 
 
-_URL = re.compile(r"([a-z][a-z0-9+.-]*://)[^\s'\"<>]+", re.I)
+_URL = re.compile(r"://[^\s'\"<>]+")
 
 
-def _scrub(text: str, secret: str) -> str:
+def _scrub(text: str, secret: str) -> str | None:
     """Node text with the RPC URL taken out: every piece of the URL that can carry a key (path
-    segments, query values, user info, host) is removed, then any URL left keeps only its scheme."""
+    segments raw and decoded, query values, user info, host) is removed, then any URL left keeps
+    only its scheme. None when a query or user-info value is too short to remove safely: the
+    caller then drops the node text altogether."""
     s = urllib.parse.urlsplit(secret)
-    parts = [secret, secret.split("://", 1)[-1], s.netloc, s.path, s.query, s.username or "", s.password or ""]
-    parts += [p for p in s.path.split("/") if p]
-    parts += [v for _, v in urllib.parse.parse_qsl(s.query)]
+    creds = [v for _, v in urllib.parse.parse_qsl(s.query)]
+    creds += [kv.split("=", 1)[1] for kv in s.query.split("&") if "=" in kv]
+    creds += [s.username or "", s.password or ""]
+    creds += [urllib.parse.unquote(c) for c in creds]
+    creds = [c for c in creds if c]
+    if any(len(c) < 4 for c in creds):
+        return None
+    segs = [p for p in s.path.split("/") if p]
+    parts = [secret, secret.split("://", 1)[-1], s.netloc, s.hostname or "", s.path, s.query, *creds,
+             *segs, *(urllib.parse.unquote(p) for p in segs)]
     for p in sorted({p for p in parts if len(p) >= 4}, key=len, reverse=True):
         text = re.sub(re.escape(p), "[redacted]", text, flags=re.I)
-    return _URL.sub(r"\1[redacted]", text)
+    return _URL.sub("://[redacted]", text)
 
 
 def rpc(url: str, method: str, params: list):
@@ -247,7 +256,9 @@ def rpc(url: str, method: str, params: list):
     if not isinstance(r, dict) or "result" not in r:
         err = r.get("error") if isinstance(r, dict) else None
         msg = err.get("message", "no result") if isinstance(err, dict) else "no result"
-        raise BPError("rpc_error", f"your RPC answered an error: {_scrub(str(msg), url)[:200]}")
+        clean = _scrub(str(msg), url)
+        raise BPError("rpc_error", f"your RPC answered an error: {clean[:200]}" if clean is not None
+                      else "your RPC answered an error (its text is withheld: it could carry your RPC key)")
     return r["result"]
 
 

@@ -7,6 +7,7 @@ import json
 import pathlib
 import random
 import sys
+import time
 
 import pytest
 
@@ -278,8 +279,10 @@ def test_network_errors_never_echo_the_rpc_url(monkeypatch):
     ("https://user:KEY0123456789abcdef@node.invalid/", "auth failed for {url}"),
     ("https://KEY0123456789abcdef.rpc.invalid/", "no such client KEY0123456789abcdef.rpc.invalid"),
     ("https://node.invalid/v2/KEY0123456789abcdef", "see https://other.invalid/v2/KEY0123456789abcdef/x"),
+    ("https://KEY0123456789abcdef.rpc.invalid:8545/", "host KEY0123456789abcdef.rpc.invalid refused"),
+    ("https://node.invalid/v2/KEY0123456789abcdef%2Fz", "unknown key KEY0123456789abcdef/z"),
 ])
-def test_json_rpc_errors_never_echo_the_rpc_key(monkeypatch, secret, echo):  # mutants: M69, M70
+def test_json_rpc_errors_never_echo_the_rpc_key(monkeypatch, secret, echo):  # mutants: M69-M72
     """A node that answers HTTP 200 with a JSON-RPC error quoting its own endpoint must not put the key
     in the tool output: the transport branch above is guarded, this one carries the node's own text."""
     key = "KEY0123456789abcdef"
@@ -289,6 +292,25 @@ def test_json_rpc_errors_never_echo_the_rpc_key(monkeypatch, secret, echo):  # m
         bp.rpc(secret, "eth_chainId", [])
     assert e.value.code == "rpc_error"
     assert key.lower() not in str(e.value).lower()
+
+
+@pytest.mark.parametrize("secret", ["https://node.invalid/rpc?k=a1b", "https://u:a1b@node.invalid/"])
+def test_json_rpc_error_with_a_short_credential_is_withheld(monkeypatch, secret):  # mutant: M73
+    """A query or user-info value under four characters cannot be removed without eating unrelated
+    text, so the node's text is dropped whole rather than trusted."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": "bad credential a1b"}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc(secret, "eth_chainId", [])
+    assert e.value.code == "rpc_error" and "a1b" not in str(e.value) and "withheld" in str(e.value)
+
+
+def test_json_rpc_error_text_scrubbed_in_linear_time(monkeypatch):  # mutant: M74
+    """A node message of scheme-like characters with no '://' must not make the scrub quadratic."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": "a" * 30_000}})
+    t = time.monotonic()
+    with pytest.raises(bp.BPError):
+        bp.rpc("https://node.invalid/v1/SECRET-KEY", "eth_chainId", [])
+    assert time.monotonic() - t < 1
 
 
 @pytest.mark.parametrize("body", [{"error": "boom"}, {"error": None}, {}, []])
