@@ -389,6 +389,11 @@ SEL_PLAN = "49d5f197"       # previewPlan(address,address,uint256)
 SEL_AGG3 = "82ad56cb"       # aggregate3((address,bool,bytes)[])
 SEL_BLOCK = "42cbb15c"      # getBlockNumber()
 SEL_DECIMALS = "313ce567"   # decimals()
+# On Arbitrum and Robinhood Chain (Orbit) block.number, so Multicall3.getBlockNumber, is the L1 block;
+# ArbSys(0x64).arbBlockNumber() is the block the RPC tags count (measured 11-20). Read the block there.
+ARBSYS = "0x0000000000000000000000000000000000000064"
+SEL_ARB_BLOCK = "a3b1b31d"  # arbBlockNumber()
+ARBSYS_BLOCK_CHAINS = (42161, 4663)
 SEL_ERROR = "08c379a0"      # Error(string)
 # Revert data named the way worker/usd.ts names it (viem decodeErrorResult over BLAZE_ERRORS_ABI): selector -> (name, types)
 USD_ERRORS = {SEL_ERROR: ("Error", ["string"]), "4e487b71": ("Panic", ["uint256"]),
@@ -531,6 +536,10 @@ def _route_tokens(pv, skip: set) -> list:
     return out
 
 
+def _block_call(cid: int) -> list:
+    return _call3(ARBSYS, SEL_ARB_BLOCK) if cid in ARBSYS_BLOCK_CHAINS else _call3(MULTICALL3, SEL_BLOCK)
+
+
 def _block_of(r, pin) -> int:
     n = _uint_result(r, ["uint256"])
     if n is None or (pin is not None and n != pin):
@@ -556,7 +565,7 @@ def usd_value(chain, token: str, amount_in, block=None) -> dict:
         raise BPError("rpc_wrong_chain", f"your RPC for {CHAINS[cid]['name']} serves another chain")
     tag = "latest" if pin is None else hex(pin)
     if tok == dol:   # the dollar token itself: 1 USD per unit; block and decimals still read on-chain
-        res = _multicall(url, [_call3(MULTICALL3, SEL_BLOCK), _call3(dol, SEL_DECIMALS)], tag)
+        res = _multicall(url, [_block_call(cid), _call3(dol, SEL_DECIMALS)], tag)
         n = _block_of(res[0], pin)
         dd = _uint_result(res[1], ["uint8"])
         out.update(blockNumber=str(n), tokenDecimals=dd, dollarDecimals=dd, usdValue=str(amt), rpc={"requests": 1},
@@ -571,7 +580,7 @@ def usd_value(chain, token: str, amount_in, block=None) -> dict:
     def calls(sp):
         return [_plan_call(cid, a, b, x) for _, legs in sp for a, b, x in legs]
 
-    head = [_call3(MULTICALL3, SEL_BLOCK), _call3(tok, SEL_DECIMALS), _call3(dol, SEL_DECIMALS)]
+    head = [_block_call(cid), _call3(tok, SEL_DECIMALS), _call3(dol, SEL_DECIMALS)]
     res = _multicall(url, head + calls(specs), tag)
     n = _block_of(res[0], pin)
     dt, dd = _uint_result(res[1], ["uint8"]), _uint_result(res[2], ["uint8"])
@@ -580,7 +589,7 @@ def usd_value(chain, token: str, amount_in, block=None) -> dict:
     requests = 1
     if found:   # every via again in ONE eth_call pinned at the same block
         specs += [([tok, x, dol], [(tok, x, amt), (x, dol, ref)]) for x, ref in found]
-        res2 = _multicall(url, [_call3(MULTICALL3, SEL_BLOCK)] + calls(specs), hex(n))
+        res2 = _multicall(url, [_block_call(cid)] + calls(specs), hex(n))
         if _uint_result(res2[0], ["uint256"]) != n:
             raise BPError("rpc_error", "your RPC did not honour the block pin of the second request")
         vias, _ = _vias_from(res2[1:], specs)

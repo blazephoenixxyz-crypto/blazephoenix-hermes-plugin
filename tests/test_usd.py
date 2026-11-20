@@ -22,6 +22,8 @@ T = "0x" + "aa" * 20
 X = ["0x%040x" % (0xb0 + i) for i in range(12)]
 E18 = 10**18
 BLOCK = 30_000_000
+L1_BLOCK = 26_452_919   # what block.number answers on Arbitrum chains
+ARBSYS = "0x" + "00" * 19 + "64"
 ZERO = "0x" + "00" * 20
 LEG = [ZERO, ZERO, 0, 0, 0, False, False, 0, 0, "0x" + "00" * 32]
 
@@ -49,19 +51,22 @@ API_BASIS = ("Each via is the netOut the Quoter reports for A in one block: afte
 class Node:
     """Fake RPC: plans[(a, b, amount)] = (netOut, hops) | bytes (revert data); decimals[token] = int."""
 
-    def __init__(self, plans, decimals=None, honour_pin=True):
-        self.plans, self.honour_pin, self.tags, self.calls = plans, honour_pin, [], []
+    def __init__(self, plans, decimals=None, honour_pin=True, chain=8453):
+        self.plans, self.honour_pin, self.tags, self.calls, self.chain = plans, honour_pin, [], [], chain
         self.decimals = {T: 18, D: 6, W: 18, **(decimals or {})}
         self.head = BLOCK
 
     def answer(self, target, cd, block):
         sel, args = cd[:4].hex(), cd[4:]
+        arb = self.chain in (42161, 4663)   # block.number is the L1 block there (measured 11-20)
         if sel == bp.SEL_BLOCK and target == bp.MULTICALL3.lower():
-            return True, eth_abi.encode(["uint256"], [block])
+            return True, eth_abi.encode(["uint256"], [L1_BLOCK if arb else block])
+        if target == ARBSYS:   # the precompile on Arbitrum chains; elsewhere no code: success, no data
+            return True, eth_abi.encode(["uint256"], [block]) if arb and sel == "a3b1b31d" else b""
         if sel == bp.SEL_DECIMALS:
             d = self.decimals.get(target)
             return (False, b"") if d is None else (True, eth_abi.encode(["uint8"], [d]))
-        if sel == bp.SEL_PLAN and target == bp.CHAINS[8453]["quoter"].lower():
+        if sel == bp.SEL_PLAN and target == bp.CHAINS[self.chain]["quoter"].lower():
             a, b, amt = eth_abi.decode(["address", "address", "uint256"], args)
             p = self.plans.get((a.lower(), b.lower(), amt), b"")
             if isinstance(p, Raw):
@@ -71,7 +76,7 @@ class Node:
 
     def __call__(self, url, method, params):
         if method == "eth_chainId":
-            return "0x2105"
+            return hex(self.chain)
         assert method == "eth_call" and params[0]["to"] == bp.MULTICALL3
         data = bytes.fromhex(params[0]["data"][2:])
         assert data[:4].hex() == bp.SEL_AGG3
@@ -313,9 +318,7 @@ def test_dollar_token_without_decimals_is_not_measured(node):  # mutant: M47 (id
 def test_robinhood_dollar_is_usdg(node, monkeypatch):
     monkeypatch.setenv("BLAZEPHOENIX_RPC_ROBINHOOD", "https://node.example")
     g = bp.CHAINS[4663]["tokens"]["USDG"].lower()
-    n = node({}, decimals={g: 6})
-    n_call = n.__call__
-    monkeypatch.setattr(bp, "rpc", lambda u, m, p: "0x1237" if m == "eth_chainId" else n_call(u, m, p))
+    node({}, decimals={g: 6}, chain=4663)
     r = bp.usd_value("robinhood", "USDG", "2500000")
     assert (r["label"], r["usd"], r["dollarToken"]) == ("USD (via USDG)", "2.5", g)
 
@@ -360,6 +363,35 @@ def test_route_token_adds_a_via_in_one_pinned_request(node):  # mutant: M40 (sec
     v = r["vias"][2]
     assert (v["path"], v["status"], v["usd"], v["scaledFrom"]) == ([T, X[0], D], "measured", "4000000", str(ref))
     assert r["usdValue"] == "3000000" and r["blockNumber"] == str(BLOCK + 1)
+
+
+def test_arbitrum_block_is_the_l2_block_rpc_tags_count(node, monkeypatch):  # mutant: M61 (block from Multicall3 everywhere)
+    monkeypatch.setenv("BLAZEPHOENIX_RPC_ARBITRUM", "https://node.example")
+    d, w = (bp.CHAINS[42161]["tokens"][k].lower() for k in ("USDC", "WETH"))
+    x, ref = X[0], 7 * 10**6
+    n = node({(T, d, 2 * E18): (5_000_000, [(T, x, 2 * E18), (x, d, ref)]), (T, w, 2 * E18): (10**15, [(T, w, 2 * E18)]),
+              (w, d, E18): (3_000_000_000, [(w, d, E18)]), (T, x, 2 * E18): (7 * 10**6, [(T, x, 2 * E18)]),
+              (x, d, ref): (4_000_000, [(x, d, ref)])}, decimals={d: 6}, chain=42161)
+    r = bp.usd_value("arbitrum", T, str(2 * E18))
+    assert r["rpc"] == {"requests": 2} and n.tags == ["latest", hex(BLOCK + 1)]
+    assert r["blockNumber"] == str(BLOCK + 1) and r["usdValue"] == "3000000"
+
+
+def test_robinhood_block_at_a_given_block(node, monkeypatch):  # mutant: M62 (4663 left out)
+    monkeypatch.setenv("BLAZEPHOENIX_RPC_ROBINHOOD", "https://node.example")
+    g = bp.CHAINS[4663]["tokens"]["USDG"].lower()
+    n = node({(T, g, 2 * E18): (2_000_000, [(T, g, 2 * E18)])}, decimals={g: 6}, chain=4663)
+    r = bp.usd_value("robinhood", T, str(2 * E18), block=123)
+    assert n.tags == ["0x7b"] and r["blockNumber"] == "123" and r["usdValue"] == "2000000"
+
+
+def test_block_call_without_data_fails_closed(node, monkeypatch):  # mutant: M63 (ArbSys on every chain)
+    n = node(parity_plans())
+    n.chain = 8453
+    monkeypatch.setattr(bp, "ARBSYS_BLOCK_CHAINS", (8453,))   # 0x64 has no code on Base: no block number
+    with pytest.raises(bp.BPError) as e:
+        usd()
+    assert e.value.code == "rpc_error"
 
 
 def test_second_request_must_honour_the_pin(node):  # mutant: M41 (pin of request 2 not checked)

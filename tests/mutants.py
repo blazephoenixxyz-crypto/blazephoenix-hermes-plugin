@@ -69,6 +69,9 @@ MUTANTS = {
     "M58 USD refX above the Router cap kept": ("if 0 < ref <= MAX_USD_AMOUNT:", "if ref:"),
     "M59 USD refX cap off by one": ("if 0 < ref <= MAX_USD_AMOUNT:", "if 0 < ref < MAX_USD_AMOUNT:"),
     "M60 USD short error payload raises": ('        except BPError:\n            pass\n    return f"call reverted', '        except ZeroDivisionError:\n            pass\n    return f"call reverted'),
+    "M61 USD block from Multicall3 on Arbitrum": ("if cid in ARBSYS_BLOCK_CHAINS else", "if False else"),
+    "M62 USD Robinhood left out of ArbSys": ("ARBSYS_BLOCK_CHAINS = (42161, 4663)", "ARBSYS_BLOCK_CHAINS = (42161,)"),
+    "M63 USD ArbSys on every chain": ("if cid in ARBSYS_BLOCK_CHAINS else", "if True else"),
     "M21 URL echoed in errors": ("{'your RPC' if secret else urllib.parse.urlsplit(url).netloc}", "{url}"),
 }
 
