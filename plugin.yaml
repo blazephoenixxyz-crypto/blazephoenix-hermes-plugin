@@ -10,6 +10,7 @@ tags: [defi, swap, quotes, ethereum, base]
 provides_tools:
   - blazephoenix_quote
   - blazephoenix_verify_calldata
+  - blazephoenix_usd_value
   - blazephoenix_chains
 requires_env:
   - name: BLAZEPHOENIX_RPC_BASE

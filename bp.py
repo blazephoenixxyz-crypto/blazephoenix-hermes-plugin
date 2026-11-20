@@ -75,7 +75,7 @@ class BPError(Exception):
 # ---- minimal strict ABI codec ------------------------------------------------------------------
 
 def _dyn(t) -> bool:
-    return isinstance(t, tuple) or (isinstance(t, list) and any(_dyn(x) for x in t))
+    return t == "bytes" or isinstance(t, tuple) or (isinstance(t, list) and any(_dyn(x) for x in t))
 
 
 def _head(t) -> int:
@@ -111,6 +111,11 @@ def _scalar(t: str, w: int):
 
 
 def _dec(t, d: bytes, o: int):
+    if t == "bytes":
+        n = _word(d, o)
+        if n > len(d) - o - 32:
+            raise BPError("abi", "bytes length out of range")
+        return "0x" + d[o + 32:o + 32 + n].hex()
     if isinstance(t, str):
         return _scalar(t, _word(d, o))
     if isinstance(t, tuple):
@@ -127,6 +132,9 @@ def _dec(t, d: bytes, o: int):
 
 
 def _enc(t, v) -> bytes:
+    if t == "bytes":
+        b = _hex(v)
+        return len(b).to_bytes(32, "big") + b + bytes(-len(b) % 32)
     if isinstance(t, str):
         if t == "address":
             v = int(v, 16)
@@ -369,3 +377,279 @@ def chains() -> list:
              "rpcConfigured": bool((get_secret(f"BLAZEPHOENIX_RPC_{c['key']}") or "").strip()),
              "router": c["router"], "quoter": c["quoter"], "tokens": c["tokens"], "protocolVersion": "1.0.0"}
             for cid, c in CHAINS.items()]
+
+
+# ---- USD value ---------------------------------------------------------------------------------
+# What amount_in of a token is worth in the chain's dollar token, measured only with the pinned
+# Quoter (previewPlan) through Multicall3 on YOUR node, every via in one eth_call at one block.
+# The dollar token (USDC; USDG on Robinhood Chain) is treated as exactly 1 USD.
+
+MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11"
+SEL_PLAN = "49d5f197"       # previewPlan(address,address,uint256)
+SEL_AGG3 = "82ad56cb"       # aggregate3((address,bool,bytes)[])
+SEL_BLOCK = "42cbb15c"      # getBlockNumber()
+SEL_DECIMALS = "313ce567"   # decimals()
+# On Arbitrum and Robinhood Chain (Orbit) block.number, so Multicall3.getBlockNumber, is the L1 block;
+# ArbSys(0x64).arbBlockNumber() is the block the RPC tags count (measured 11-20). Read the block there.
+ARBSYS = "0x0000000000000000000000000000000000000064"
+SEL_ARB_BLOCK = "a3b1b31d"  # arbBlockNumber()
+ARBSYS_BLOCK_CHAINS = (42161, 4663)
+SEL_ERROR = "08c379a0"      # Error(string)
+# Revert data named the way worker/usd.ts names it (viem decodeErrorResult over BLAZE_ERRORS_ABI): selector -> (name, types)
+USD_ERRORS = {SEL_ERROR: ("Error", ["string"]), "4e487b71": ("Panic", ["uint256"]),
+              "cfcad14c": ("GateQuoteCall", ["uint256"]), "c85d7a0e": ("InputProbe", ["bool"]),
+              "3940bcb0": ("QuoteDeltas", ["int256", "int256"]), "765afc20": ("QuoterE", ["uint16"]),
+              "3d0ccdde": ("SolverE", ["uint16"]), "9a3fb915": ("HubE", ["uint16"]), "62b0a386": ("RouterE", ["uint16"])}
+AGG3_IN = [(["address", "bool", "bytes"],)]
+AGG3_OUT = [(["bool", "bytes"],)]
+MAX_VIAS = 8                # direct included; every via has at most 2 hops of tokens (T -> X -> dollar)
+MAX_USD_AMOUNT = (1 << 128) - 1
+SNAPSHOT_TRIES = 2          # a block hash lost to a reorg restarts route discovery once on a new block, then not measured
+NOT_MEASURED = "not measured"
+USD_BASIS = ("Each via is the netOut the Quoter reports for A in one block: after the 0.28% fee, including price impact; "
+             "an X -> dollar leg is priced at refX and scaled linearly. The value is the minimum over measured vias; "
+             "the dollar token counts as 1 USD.")   # worker/usd.ts USD_BASIS, verbatim
+
+
+def dollar_token(cid: int) -> tuple:
+    t = CHAINS[cid]["tokens"]
+    sym = "USDC" if "USDC" in t else "USDG"
+    return sym, t[sym].lower()
+
+
+def format_units(v: int, decimals: int) -> str:
+    """viem formatUnits: integer part, then the fraction without trailing zeros."""
+    s = str(abs(v)).rjust(decimals, "0")
+    i, f = s[:len(s) - decimals], s[len(s) - decimals:].rstrip("0")
+    return ("-" if v < 0 else "") + (i or "0") + ("." + f if f else "")
+
+
+def _call3(target: str, sel: str, types=(), args=()) -> list:
+    return [target, True, "0x" + sel + _enc(list(types), list(args)).hex()]
+
+
+def _plan_call(cid: int, a: str, b: str, amt: int) -> list:
+    return _call3(CHAINS[cid]["quoter"], SEL_PLAN, ["address", "address", "uint256"], [a, b, amt])
+
+
+def aggregate3_data(calls: list) -> str:
+    return "0x" + SEL_AGG3 + _enc(AGG3_IN, [calls]).hex()
+
+
+class _SnapshotGone(Exception):
+    """The node no longer serves the pinned block hash (a reorg), or takes no EIP-1898 blockHash at all."""
+
+
+def _snapshot(url: str, tag: str) -> tuple:
+    """The block both aggregates read, from YOUR node: (number, EIP-1898 pin by hash). A pin by number would read
+    the block that replaced it after a reorg at the same height, and the height check would still pass."""
+    h = rpc(url, "eth_getBlockByNumber", [tag, False])
+    num, bh = (h.get("number"), h.get("hash")) if isinstance(h, dict) else (None, None)
+    if not (isinstance(num, str) and num.startswith("0x") and isinstance(bh, str) and len(bh) == 66
+            and bh.startswith("0x") and all(c in "0123456789abcdefABCDEF" for c in bh[2:])):
+        raise BPError("rpc_error", "your RPC returned no block header to pin the measurement to")
+    return int(num, 16), {"blockHash": bh.lower(), "requireCanonical": True}
+
+
+def _multicall(url: str, calls: list, tag) -> list:
+    try:
+        raw = rpc(url, "eth_call", [{"to": MULTICALL3, "data": aggregate3_data(calls)}, tag])
+    except BPError:
+        if isinstance(tag, dict):   # the hash is gone or not understood: never fall back to a number
+            raise _SnapshotGone() from None
+        raise
+    try:
+        (res,) = abi_decode(AGG3_OUT, _hex(raw))
+    except BPError as e:
+        raise BPError("rpc_error", f"the Multicall3 answer from your RPC does not decode ({e})") from None
+    if len(res) != len(calls):
+        raise BPError("rpc_error", "the Multicall3 answer has the wrong number of results")
+    return res
+
+
+def _revert_reason(ret: str) -> str:
+    """'call reverted (no reason)', 'call reverted: Name(args)' or 'call reverted (0xselector)', as worker/usd.ts."""
+    b = _hex(ret)
+    if not b:
+        return "call reverted (no reason)"
+    name, types = USD_ERRORS.get(b[:4].hex(), (None, []))
+    if name:
+        try:
+            args = abi_decode(["bytes" if t == "string" else t for t in types], b[4:], strict=False)
+            words = [bytes.fromhex(a[2:]).decode("utf-8", "replace")[:200] if t == "string"
+                     else str(a).lower() if t == "bool" else str(a) for t, a in zip(types, args)]
+            return f"call reverted: {name}({', '.join(words)})"
+        except BPError:
+            pass
+    return f"call reverted (0x{b[:4].hex()})"
+
+
+def _preview(r, tin: str, tout: str) -> tuple:
+    """(preview, None) for a usable previewPlan answer of the leg tin -> tout, else (None, reason). Absent is not zero."""
+    ok, ret = r
+    if not ok:
+        return None, _revert_reason(ret)
+    try:
+        pv = dict(zip(PV_FIELDS, abi_decode(PREVIEW_OUT, _hex(ret), strict=False)[0]))
+    except BPError:
+        return None, "undecodable Quoter result"
+    if not pv["route"][0]:
+        return None, "empty route"
+    if not route_consistent(pv["route"], tin, tout):
+        return None, "route does not connect the leg tokens"
+    if pv["netOut"] == 0:
+        return None, "netOut is 0"
+    return pv, None
+
+
+def _uint_result(r, types) -> int | None:
+    ok, ret = r
+    if not ok:
+        return None
+    try:
+        return abi_decode(types, _hex(ret))[0]
+    except BPError:
+        return None
+
+
+def _vias_from(results: list, specs: list) -> tuple:
+    """Turn the Multicall3 results of each via's legs into via objects; also return the direct preview."""
+    vias, k, direct = [], 0, None
+    for path, legs in specs:
+        pvs = []
+        for a, b, _ in legs:
+            pvs.append(_preview(results[k], a, b))
+            k += 1
+        via = {"path": path, "legs": [{"tokenIn": a, "tokenOut": b, "amountIn": str(amt),
+                                       **({"out": str(pv["netOut"])} if pv else {})}
+                                      for (a, b, amt), (pv, _) in zip(legs, pvs)]}
+        if len(legs) == 1:
+            direct = pvs[0][0]
+        bad = [why for pv, why in pvs if pv is None]
+        if len(legs) > 1:   # a two-leg via names its refX, measured or not
+            via["scaledFrom"] = str(legs[1][2])
+        if bad:
+            via.update(status=NOT_MEASURED, reason=bad[0])   # the first leg that failed
+        else:
+            if len(legs) == 1:
+                usd = pvs[0][0]["netOut"]
+            else:
+                ref = legs[1][2]
+                usd = pvs[0][0]["netOut"] * pvs[1][0]["netOut"] // ref
+            if usd == 0:
+                via.update(status=NOT_MEASURED, reason="scaled value is 0")
+            else:
+                via.update(status="measured", usd=str(usd))
+        vias.append(via)
+    return vias, direct
+
+
+def _route_tokens(pv, skip: set) -> list:
+    """Tokens the direct route touches, in route order, each with the amount of it the route moves."""
+    out = []
+    for hop in pv["route"][0]:
+        for t in (hop[0], hop[1]):
+            if t not in skip:
+                skip.add(t)
+                ref = next((h[2] for h in pv["route"][0] if h[0] == t), 0)
+                if 0 < ref <= MAX_USD_AMOUNT:   # a refX above the Router cap is no via
+                    out.append((t, ref))
+    return out
+
+
+def _block_call(cid: int) -> list:
+    return _call3(ARBSYS, SEL_ARB_BLOCK) if cid in ARBSYS_BLOCK_CHAINS else _call3(MULTICALL3, SEL_BLOCK)
+
+
+def _block_of(r, pin) -> int:
+    n = _uint_result(r, ["uint256"])
+    if n is None or (pin is not None and n != pin):
+        raise BPError("rpc_error", "your RPC did not answer at the requested block")
+    return n
+
+
+def _measure(cid: int, tok: str, dol: str, weth: str, amt: int, n: int, at: dict, call):
+    """Every aggregate of one measurement at the block hash `at` (number n). The dollar token: its decimals;
+    else (token decimals, dollar decimals, vias). Raises _SnapshotGone when the node stops serving that hash."""
+    if tok == dol:   # the dollar token itself: 1 USD per unit; block and decimals still read on-chain
+        res = call([_block_call(cid), _call3(dol, SEL_DECIMALS)], at)
+        _block_of(res[0], n)
+        return _uint_result(res[1], ["uint8"])
+    specs = [([tok, dol], [(tok, dol, amt)])]
+    if tok != weth:
+        specs.append(([tok, weth, dol], [(tok, weth, amt), (weth, dol, 10**18)]))
+
+    def calls(sp):
+        return [_plan_call(cid, a, b, x) for _, legs in sp for a, b, x in legs]
+
+    head = [_block_call(cid), _call3(tok, SEL_DECIMALS), _call3(dol, SEL_DECIMALS)]
+    res = call(head + calls(specs), at)
+    _block_of(res[0], n)
+    dt, dd = _uint_result(res[1], ["uint8"]), _uint_result(res[2], ["uint8"])
+    vias, direct = _vias_from(res[3:], specs)
+    found = _route_tokens(direct, {tok, dol, weth})[:MAX_VIAS - len(specs)] if direct else []
+    if found:   # every via again in ONE eth_call pinned at the same block HASH
+        specs += [([tok, x, dol], [(tok, x, amt), (x, dol, ref)]) for x, ref in found]
+        res2 = call([_block_call(cid), *calls(specs)], at)
+        if _uint_result(res2[0], ["uint256"]) != n:
+            raise BPError("rpc_error", "your RPC did not honour the block pin of the second request")
+        vias, _ = _vias_from(res2[1:], specs)
+    return dt, dd, vias
+
+
+def usd_value(chain, token: str, amount_in, block=None) -> dict:
+    cid = resolve_chain(chain)
+    weth = CHAINS[cid]["tokens"]["WETH"].lower()
+    tok = weth if str(token).strip().upper() == "ETH" else resolve_token(cid, token)
+    amt = _uint(amount_in, "amount_in")
+    if amt > MAX_USD_AMOUNT:
+        raise BPError("bad_request", "amount_in: must be at most 2^128 - 1 (the Router cap)")
+    pin = _uint(block, "block") if block not in (None, "") else None
+    sym, dol = dollar_token(cid)
+    out = {"chainId": cid, "version": 1, "label": f"USD (via {sym})", "dollarToken": dol,
+           "dollarDecimals": None, "token": tok, "amountIn": str(amt), "tokenDecimals": None,
+           "blockNumber": None, "usdValue": None, "usd": NOT_MEASURED, "unitPrice": NOT_MEASURED,
+           "vias": [], "spread": None, "rpc": {"requests": 0}, "basis": USD_BASIS}
+    url = rpc_url(cid)
+    if int(rpc(url, "eth_chainId", []), 16) != cid:
+        raise BPError("rpc_wrong_chain", f"your RPC for {CHAINS[cid]['name']} serves another chain")
+    tag = "latest" if pin is None else hex(pin)
+    sent = [0]
+
+    def call(calls, at):
+        sent[0] += 1
+        return _multicall(url, calls, at)
+
+    for _ in range(SNAPSHOT_TRIES):
+        n, at = _snapshot(url, tag)
+        if pin is not None and n != pin:
+            raise BPError("rpc_error", "your RPC did not answer at the requested block")
+        try:
+            got = _measure(cid, tok, dol, weth, amt, n, at, call)
+        except _SnapshotGone:
+            continue    # restart discovery on a new snapshot; never reuse candidates from the lost one
+        break
+    else:
+        out["rpc"] = {"requests": sent[0]}
+        return out      # no block hash held for both aggregates: not measured, never a value
+    if tok == dol:
+        dd = got
+        out.update(blockNumber=str(n), tokenDecimals=dd, dollarDecimals=dd, usdValue=str(amt), rpc={"requests": sent[0]},
+                   vias=[{"path": [dol], "status": "identity", "usd": str(amt), "legs": []}])
+        if dd is not None:
+            out.update(usd=format_units(amt, dd), unitPrice=format_units(amt * 10 ** (dd + 18) // (amt * 10 ** dd), 18))
+        return out
+    dt, dd, vias = got
+    measured = [int(v["usd"]) for v in vias if v["status"] == "measured"]
+    out.update(blockNumber=str(n), tokenDecimals=dt, dollarDecimals=dd, vias=vias, rpc={"requests": sent[0]})
+    if measured:
+        usd = min(measured)   # conservative: the least any via says the amount is worth
+        out["usdValue"] = str(usd)
+        if dd is not None:
+            out["usd"] = format_units(usd, dd)
+        if dt is not None and dd is not None:
+            out["unitPrice"] = format_units(usd * 10 ** (dt + 18) // (amt * 10 ** dd), 18)
+    if len(measured) >= 2:
+        lo, hi = min(measured), max(measured)
+        out["spread"] = {"min": str(lo), "max": str(hi), "diff": str(hi - lo), "bps": str((hi - lo) * 10_000 // hi)}
+    return out

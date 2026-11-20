@@ -47,6 +47,36 @@ def test_dust_fails_cleanly():
     assert e.value.code == "rpc_error"
 
 
+AAPLC = "0xb200000000000000000000C2e324d24d7eEcd1fb"
+
+
+def test_usd_value_of_weth_on_base():
+    r = bp.usd_value("base", "WETH", str(10**16))
+    w, d = (bp.CHAINS[8453]["tokens"][k].lower() for k in ("WETH", "USDC"))
+    vias = r["vias"]
+    # 1 request, or 2 when the direct WETH -> USDC route goes through a token X (a WETH -> X -> USDC via)
+    assert r["rpc"]["requests"] == (1 if len(vias) == 1 else 2) and r["label"] == "USD (via USDC)"
+    assert vias[0]["path"] == [w, d] and vias[0]["status"] == "measured" and r["tokenDecimals"] == 18
+    assert all(len(v["path"]) == 3 and v["path"][0] == w and v["path"][2] == d and v["path"][1] not in (w, d)
+               for v in vias[1:])
+    measured = [int(v["usd"]) for v in vias if v["status"] == "measured"]
+    assert int(r["usdValue"]) == min(measured) > 0
+    assert r["usd"] != "not measured" and int(r["blockNumber"]) > 0
+
+
+@pytest.mark.parametrize("token_in,amount", [("USDC", 10 * 10**6), ("WETH", 10**16)])
+def test_usd_value_of_a_quote_output_on_base(token_in, amount):
+    q = bp.usd_value  # the output of token_in -> AAPLc, valued through every via in one block
+    data = "0x" + bp.SEL_PLAN + bp._enc(["address", "address", "uint256"],
+                                        [bp.resolve_token(8453, token_in), AAPLC.lower(), amount]).hex()
+    raw = bp.rpc(bp.rpc_url(8453), "eth_call", [{"to": bp.CHAINS[8453]["quoter"], "data": data}, "latest"])
+    out = dict(zip(bp.PV_FIELDS, bp.abi_decode(bp.PREVIEW_OUT, bp._hex(raw), strict=False)[0]))["netOut"]
+    r = q("base", AAPLC, str(out))
+    measured = [int(v["usd"]) for v in r["vias"] if v["status"] == "measured"]
+    assert len(measured) >= 2 and int(r["usdValue"]) == min(measured) > 0
+    assert r["spread"]["bps"] == str((max(measured) - min(measured)) * 10_000 // max(measured))
+
+
 def _tamper(monkeypatch, path, edit):
     real = bp._http
 

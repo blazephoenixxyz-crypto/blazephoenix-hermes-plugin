@@ -1,0 +1,44 @@
+# BlazePhoenix for Hermes Agent
+
+> A Hermes Agent plugin for BlazePhoenix, the on-chain DEX aggregator on Base, Ethereum, Optimism, Arbitrum and Robinhood Chain. Swap quotes and dollar values are measured as an `eth_call` on your own RPC node and checked locally; the plugin never signs, never sends a transaction and never holds a key.
+
+Install with `hermes plugins install blazephoenix` and set `BLAZEPHOENIX_RPC_BASE` to your own Base node (optional, one per chain: `BLAZEPHOENIX_RPC_ETHEREUM`, `BLAZEPHOENIX_RPC_OPTIMISM`, `BLAZEPHOENIX_RPC_ARBITRUM`, `BLAZEPHOENIX_RPC_ROBINHOOD`). A chain without an RPC answers `rpc_required`; nothing falls back to a shared node. The RPC URL is read through Hermes's secret scope and never appears in tool output. Standard library only; amounts are in base units.
+
+Tools:
+
+- `blazephoenix_quote`: net output after the fee, on-chain minimum, price impact and the Phoenix Check verdict (`ok`, `caution`, `danger`, or a refusal). With `recipient`, also verified unsigned calldata and the exact ERC-20 approval, only when your node measures the route as executable.
+- `blazephoenix_verify_calldata`: checks `swapExactIn` calldata from any source against the pinned Router and what the user asked for. Pure and offline.
+- `blazephoenix_usd_value`: what an amount of a token is worth in dollars, derived on-chain.
+- `blazephoenix_chains`: chains, pinned Router and Quoter addresses, token symbols, and whether an RPC is set.
+
+## USD value
+
+No price oracle and no third-party price API: the dollar value comes from the BlazePhoenix Quoter's own `previewPlan` net outputs, run on your node.
+
+- One call, one block: the block number, the token decimals and every `previewPlan` quote are read in a single Multicall3 `aggregate3` `eth_call` (`0xcA11bde05977b3631167028862bE2a173976CA11`), so every via comes from one block. Both `aggregate3` calls are pinned to one block hash (EIP-1898 `blockHash`, `requireCanonical`) read first with `eth_getBlockByNumber`; a second `aggregate3` runs only when the route adds tokens. If a reorg drops that hash, route discovery restarts once on a new block; if the hash is lost again, or the node does not take `blockHash`, the result is `not measured`, never a value. `rpc.requests` counts every `eth_call` sent (1 to 4).
+- Anchors and vias: the dollar token is USDC (USDG on Robinhood Chain) and counts as exactly 1 USD; WETH is the second anchor. The amount is priced directly into the dollar token, through WETH, and through each token the direct route touches (at most 8 vias, at most 2 hops each). A leg token -> dollar is priced at the amount of that token the route moves (`scaledFrom`) and scaled linearly.
+- Conservative: the value is the minimum over the measured vias, the net output actually received after the 0.28% fee, including price impact. With two or more measured vias the result also carries the `spread` (`min`, `max`, `diff`, `bps`), with no threshold and no verdict.
+- Absent is not zero: a via that fails, routes nothing or nets 0 is `not measured`; with no via measured, `usd` and `unitPrice` are `not measured`, never 0. A token that is already the dollar token needs only the block and the decimals, read on-chain.
+- Label: the result says `USD (via USDC)` (or `USD (via USDG)`), with the block, every via and its legs, and `unitPrice`. Show it with that label.
+- Decentralised: for the USD value the plugin calls the Quoter through Multicall3 on your node and nothing else; BlazePhoenix hosts no RPC for it.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/blazephoenixxyz-crypto/blazephoenix-hermes-plugin/main/README.md): tools, setup, how a quote is made, what the plugin does on your machine, tests
+- [plugin.yaml](https://raw.githubusercontent.com/blazephoenixxyz-crypto/blazephoenix-hermes-plugin/main/plugin.yaml): manifest, provided tools and environment variables
+
+## Source
+
+- [bp.py](https://raw.githubusercontent.com/blazephoenixxyz-crypto/blazephoenix-hermes-plugin/main/bp.py): ABI codec, local verification of quotes and calldata, the Phoenix Check and the USD value
+- [__init__.py](https://raw.githubusercontent.com/blazephoenixxyz-crypto/blazephoenix-hermes-plugin/main/__init__.py): tool schemas and registration
+- [tests](https://github.com/blazephoenixxyz-crypto/blazephoenix-hermes-plugin/tree/main/tests): offline tests, live tests and the mutant gate
+
+## Related
+
+- [BlazePhoenix SDK](https://github.com/blazephoenixxyz-crypto/SDK): the TypeScript SDK, quotes on your RPC in-process
+- [BlazePhoenix MCP](https://github.com/blazephoenixxyz-crypto/blazephoenix-mcp): the local MCP server for AI agents
+- [BlazePhoenix API llms.txt](https://raw.githubusercontent.com/blazephoenixxyz-crypto/Blaze-Phoenix-API/main/llms.txt): the hosted prepare and decode API
+
+## Optional
+
+- [Site llms.txt](https://blazephoenix.xyz/llms.txt): the integration guide for the whole project

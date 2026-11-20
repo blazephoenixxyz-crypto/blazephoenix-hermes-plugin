@@ -67,6 +67,29 @@ VERIFY = {
     },
 }
 
+USD = {
+    "name": "blazephoenix_usd_value",
+    "description": (
+        "What an amount of a token is worth in the chain's dollar token (USDC; USDG on Robinhood Chain, taken as "
+        "1 USD), measured on the user's OWN RPC: the pinned Quoter prices the token directly and through WETH and "
+        "the tokens its route touches (at most 8 vias of at most 2 hops), all in one Multicall3 eth_call at one "
+        "block. The value is the LEAST of the measured vias (net of the fee, including price impact) and the "
+        "spread between vias is returned. A via that fails is 'not measured', never 0; if none is measured the "
+        "value is 'not measured'. Show it with its label, e.g. 'USD (via USDC)'."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "chain": _CHAIN,
+            "token": {"type": "string", "description": "token to value: " + _TOKEN + " ETH is valued as WETH."},
+            "amount_in": {"type": "string", "description": "amount in base units (integer string, at most 2^128 - 1)"},
+            "block": {"type": "string", "description": "optional: block number to measure at (default latest)"},
+        },
+        "required": ["token", "amount_in"],
+        "additionalProperties": False,
+    },
+}
+
 CHAINS = {
     "name": "blazephoenix_chains",
     "description": "List the chains BlazePhoenix quotes on, the pinned Router and Quoter addresses, known token symbols, "
@@ -102,6 +125,11 @@ def verify_calldata(args: dict, **kwargs) -> str:
     return _run(go)
 
 
+def usd_value(args: dict, **kwargs) -> str:
+    return _run(lambda: bp.usd_value(args.get("chain"), args.get("token", ""), args.get("amount_in", ""),
+                                     args.get("block")))
+
+
 def chains(args: dict, **kwargs) -> str:
     return _run(bp.chains)
 
@@ -109,4 +137,5 @@ def chains(args: dict, **kwargs) -> str:
 def register(ctx):
     ctx.register_tool(name=QUOTE["name"], toolset="blazephoenix", schema=QUOTE, handler=quote)
     ctx.register_tool(name=VERIFY["name"], toolset="blazephoenix", schema=VERIFY, handler=verify_calldata)
+    ctx.register_tool(name=USD["name"], toolset="blazephoenix", schema=USD, handler=usd_value)
     ctx.register_tool(name=CHAINS["name"], toolset="blazephoenix", schema=CHAINS, handler=chains)
