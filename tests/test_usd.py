@@ -55,6 +55,17 @@ class Node:
         self.plans, self.honour_pin, self.tags, self.calls, self.chain = plans, honour_pin, [], [], chain
         self.decimals = {T: 18, D: 6, W: 18, **(decimals or {})}
         self.head = BLOCK
+        self.fork, self.reorg_after, self.reorg_plans, self.blockhash, self.header_skew = 0, None, None, True, 0
+        self.canon = {}             # block number -> fork whose block is canonical at that height
+
+    def hash_of(self, block, fork):
+        return "0x" + f"{fork:02x}{block:062x}"
+
+    def reorg(self):
+        """Replace the canonical block at every height with another one, from now on with other plans."""
+        self.fork += 1
+        self.plans = self.reorg_plans
+        self.canon = {b: self.fork for b in self.canon}
 
     def answer(self, target, cd, block):
         sel, args = cd[:4].hex(), cd[4:]
@@ -77,16 +88,33 @@ class Node:
     def __call__(self, url, method, params):
         if method == "eth_chainId":
             return hex(self.chain)
+        if method == "eth_getBlockByNumber":
+            self.tags.append(params[0])
+            if params[0] == "latest":
+                self.head += 1      # the chain moves between two measurements at "latest"
+            b = (self.head if params[0] == "latest" else int(params[0], 16)) + self.header_skew
+            self.canon.setdefault(b, self.fork)
+            return {"number": hex(b), "hash": self.hash_of(b, self.canon[b])}
         assert method == "eth_call" and params[0]["to"] == bp.MULTICALL3
         data = bytes.fromhex(params[0]["data"][2:])
         assert data[:4].hex() == bp.SEL_AGG3
         (calls,) = eth_abi.decode(["(address,bool,bytes)[]"], data[4:])
         tag = params[1]
-        self.tags.append(tag)
-        if tag == "latest":
+        if isinstance(tag, dict):   # EIP-1898: a block hash, never resolved to a number by height
+            if not self.blockhash:
+                raise bp.BPError("rpc_error", "your RPC answered an error: invalid argument 1: hex string expected")
+            assert tag["requireCanonical"] is True
+            hit = [b for b, f in self.canon.items() if self.hash_of(b, f) == tag["blockHash"]]
+            if not hit:             # the block was reorganised away: the node no longer serves that hash
+                raise bp.BPError("rpc_error", "your RPC answered an error: header not found")
+            block = hit[0] if self.honour_pin is True or (self.honour_pin == "first" and not self.calls) else self.head + 7
+            self.tags.append("hash:" + hex(block))
+        elif tag == "latest":
+            self.tags.append(tag)
             self.head += 1          # the chain moves between two requests at "latest"
             block = self.head
         else:
+            self.tags.append(tag)
             block = int(tag, 16) if self.honour_pin else self.head + 7
         out = []
         for target, allow, cd in calls:
@@ -95,6 +123,8 @@ class Node:
                 raise bp.BPError("rpc_error", "your RPC answered an error: Multicall3: call failed")
             out.append((ok, ret))
         self.calls.append(len(calls))
+        if self.reorg_after == len(self.calls):
+            self.reorg()
         return "0x" + eth_abi.encode(["(bool,bytes)[]"], [out]).hex()
 
 
@@ -132,7 +162,7 @@ def test_parity_vector(node):  # mutants: M26, M27, M33 (format_units), M48 (bps
     assert r["vias"][1]["legs"] == [{"tokenIn": T, "tokenOut": W, "amountIn": str(2 * E18), "out": str(10**15)},
                                     {"tokenIn": W, "tokenOut": D, "amountIn": str(E18), "out": "3000000000"}]
     assert (r["label"], r["dollarToken"], r["tokenDecimals"], r["dollarDecimals"]) == ("USD (via USDC)", D, 18, 6)
-    assert r["rpc"] == {"requests": 1} and n.calls == [6] and n.tags == ["latest"]
+    assert r["rpc"] == {"requests": 1} and n.calls == [6] and n.tags == ["latest", "hash:" + hex(BLOCK + 1)]
     assert r["blockNumber"] == str(BLOCK + 1) and r["basis"] == API_BASIS
     json.dumps(r)   # JSON-safe: every amount is a decimal string
 
@@ -335,7 +365,7 @@ def test_user_block_is_pinned_and_checked(node):  # mutant: M39 (pinned block no
     n = node(parity_plans(), honour_pin=False)
     with pytest.raises(bp.BPError) as e:
         usd(block=123)
-    assert e.value.code == "rpc_error" and n.tags == ["0x7b"]
+    assert e.value.code == "rpc_error" and n.tags == ["0x7b", "hash:" + hex(BLOCK + 7)]
     n = node(parity_plans())
     assert usd(block=123)["blockNumber"] == "123"
 
@@ -359,7 +389,8 @@ def test_route_token_adds_a_via_in_one_pinned_request(node):  # mutant: M40 (sec
     ref = 7 * 10**6
     n = node(routed([X[0]], ref))
     r = usd()
-    assert r["rpc"] == {"requests": 2} and n.tags == ["latest", hex(BLOCK + 1)] and n.calls == [6, 6]
+    assert r["rpc"] == {"requests": 2} and n.calls == [6, 6]
+    assert n.tags == ["latest", "hash:" + hex(BLOCK + 1), "hash:" + hex(BLOCK + 1)]   # one header, one hash
     v = r["vias"][2]
     assert (v["path"], v["status"], v["usd"], v["scaledFrom"]) == ([T, X[0], D], "measured", "4000000", str(ref))
     assert r["usdValue"] == "3000000" and r["blockNumber"] == str(BLOCK + 1)
@@ -373,7 +404,7 @@ def test_arbitrum_block_is_the_l2_block_rpc_tags_count(node, monkeypatch):  # mu
               (w, d, E18): (3_000_000_000, [(w, d, E18)]), (T, x, 2 * E18): (7 * 10**6, [(T, x, 2 * E18)]),
               (x, d, ref): (4_000_000, [(x, d, ref)])}, decimals={d: 6}, chain=42161)
     r = bp.usd_value("arbitrum", T, str(2 * E18))
-    assert r["rpc"] == {"requests": 2} and n.tags == ["latest", hex(BLOCK + 1)]
+    assert r["rpc"] == {"requests": 2} and n.tags == ["latest", "hash:" + hex(BLOCK + 1), "hash:" + hex(BLOCK + 1)]
     assert r["blockNumber"] == str(BLOCK + 1) and r["usdValue"] == "3000000"
 
 
@@ -382,7 +413,7 @@ def test_robinhood_block_at_a_given_block(node, monkeypatch):  # mutant: M62 (46
     g = bp.CHAINS[4663]["tokens"]["USDG"].lower()
     n = node({(T, g, 2 * E18): (2_000_000, [(T, g, 2 * E18)])}, decimals={g: 6}, chain=4663)
     r = bp.usd_value("robinhood", T, str(2 * E18), block=123)
-    assert n.tags == ["0x7b"] and r["blockNumber"] == "123" and r["usdValue"] == "2000000"
+    assert n.tags == ["0x7b", "hash:0x7b"] and r["blockNumber"] == "123" and r["usdValue"] == "2000000"
 
 
 def test_block_call_without_data_fails_closed(node, monkeypatch):  # mutant: M63 (ArbSys on every chain)
@@ -395,7 +426,7 @@ def test_block_call_without_data_fails_closed(node, monkeypatch):  # mutant: M63
 
 
 def test_second_request_must_honour_the_pin(node):  # mutant: M41 (pin of request 2 not checked)
-    node(routed([X[0]], 10**6), honour_pin=False)
+    node(routed([X[0]], 10**6), honour_pin="first")
     with pytest.raises(bp.BPError) as e:
         usd()
     assert e.value.code == "rpc_error" and "block pin" in str(e.value)
@@ -498,3 +529,64 @@ def test_tool_handler_and_manifest(monkeypatch):
     names = []
     mod.register(type("C", (), {"register_tool": lambda self, **k: names.append(k["name"])})())
     assert "blazephoenix_usd_value" in names
+
+
+# ---- reorg at the same height: both aggregates pin one block HASH (EIP-1898) -----------------------
+
+def reorg_plans():
+    """After the reorg the direct route crosses Y instead of X, and the Y via is the lowest."""
+    ref, y = 7 * 10**6, X[1]
+    p = parity_plans()
+    p[(T, D, 2 * E18)] = (5_000_000, [(T, y, 2 * E18), (y, D, ref)])
+    p[(T, y, 2 * E18)] = (7 * 10**6, [(T, y, 2 * E18)])
+    p[(y, D, ref)] = (1_000_000, [(y, D, ref)])
+    return p
+
+
+def test_reorg_between_the_two_aggregates_never_mixes_blocks(node):  # mutant: M64 (second aggregate pinned by number)
+    n = node(routed([X[0]], 7 * 10**6))
+    n.reorg_after, n.reorg_plans = 1, reorg_plans()   # the block of the first aggregate is replaced at the same height
+    r = usd()
+    paths = [v["path"] for v in r["vias"]]
+    assert [T, X[0], D] not in paths and [T, X[1], D] in paths    # every via from the block that replaced it
+    assert r["usdValue"] == "1000000" and r["blockNumber"] == str(BLOCK + 2)
+    assert n.tags == ["latest", "hash:" + hex(BLOCK + 1),   # its hash is lost on the 2nd aggregate: discovery restarts
+                      "latest", "hash:" + hex(BLOCK + 2), "hash:" + hex(BLOCK + 2)]
+    assert r["rpc"] == {"requests": 4}     # every eth_call sent, the lost one included
+
+
+def test_reorg_on_every_attempt_is_not_measured(node):  # mutant: M65 (snapshot retried forever or valued)
+    n = node(routed([X[0]], 7 * 10**6))
+    n.reorg_after, n.reorg_plans = 1, routed([X[0]], 7 * 10**6)
+    orig = n.reorg
+
+    def again():
+        orig()
+        n.reorg_after = len(n.calls) + 1   # and again after the next aggregate
+    n.reorg = again
+    r = usd()
+    assert (r["usd"], r["usdValue"], r["vias"], r["blockNumber"]) == (bp.NOT_MEASURED, None, [], None)
+    assert r["unitPrice"] == bp.NOT_MEASURED and n.tags.count("latest") == 2 and r["rpc"] == {"requests": 4}
+
+
+@pytest.mark.parametrize("token", [T, D])
+def test_node_without_blockhash_is_not_measured(node, token):  # mutant: M66 (fallback to a number tag)
+    n = node(parity_plans())
+    n.blockhash = False
+    r = usd(token=token)
+    assert (r["usd"], r["usdValue"], r["vias"], r["unitPrice"]) == (bp.NOT_MEASURED, None, [], bp.NOT_MEASURED)
+    assert all(t == "latest" or t.startswith("hash:") for t in n.tags)
+
+
+def test_pinned_block_number_is_resolved_to_its_hash(node):  # mutant: M67 (header read at latest)
+    n = node(parity_plans())
+    r = usd(block=123)
+    assert n.tags == ["0x7b", "hash:0x7b"] and r["blockNumber"] == "123"
+
+
+def test_header_of_another_block_than_the_pin_fails_closed(node):  # mutant: M68 (header number not checked)
+    n = node(parity_plans())
+    n.header_skew = 1
+    with pytest.raises(bp.BPError) as e:
+        usd(block=123)
+    assert e.value.code == "rpc_error" and "requested block" in str(e.value)

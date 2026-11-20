@@ -404,6 +404,7 @@ AGG3_IN = [(["address", "bool", "bytes"],)]
 AGG3_OUT = [(["bool", "bytes"],)]
 MAX_VIAS = 8                # direct included; every via has at most 2 hops of tokens (T -> X -> dollar)
 MAX_USD_AMOUNT = (1 << 128) - 1
+SNAPSHOT_TRIES = 2          # a block hash lost to a reorg restarts route discovery once on a new block, then not measured
 NOT_MEASURED = "not measured"
 USD_BASIS = ("Each via is the netOut the Quoter reports for A in one block: after the 0.28% fee, including price impact; "
              "an X -> dollar leg is priced at refX and scaled linearly. The value is the minimum over measured vias; "
@@ -435,8 +436,28 @@ def aggregate3_data(calls: list) -> str:
     return "0x" + SEL_AGG3 + _enc(AGG3_IN, [calls]).hex()
 
 
-def _multicall(url: str, calls: list, tag: str) -> list:
-    raw = rpc(url, "eth_call", [{"to": MULTICALL3, "data": aggregate3_data(calls)}, tag])
+class _SnapshotGone(Exception):
+    """The node no longer serves the pinned block hash (a reorg), or takes no EIP-1898 blockHash at all."""
+
+
+def _snapshot(url: str, tag: str) -> tuple:
+    """The block both aggregates read, from YOUR node: (number, EIP-1898 pin by hash). A pin by number would read
+    the block that replaced it after a reorg at the same height, and the height check would still pass."""
+    h = rpc(url, "eth_getBlockByNumber", [tag, False])
+    num, bh = (h.get("number"), h.get("hash")) if isinstance(h, dict) else (None, None)
+    if not (isinstance(num, str) and num.startswith("0x") and isinstance(bh, str) and len(bh) == 66
+            and bh.startswith("0x") and all(c in "0123456789abcdefABCDEF" for c in bh[2:])):
+        raise BPError("rpc_error", "your RPC returned no block header to pin the measurement to")
+    return int(num, 16), {"blockHash": bh.lower(), "requireCanonical": True}
+
+
+def _multicall(url: str, calls: list, tag) -> list:
+    try:
+        raw = rpc(url, "eth_call", [{"to": MULTICALL3, "data": aggregate3_data(calls)}, tag])
+    except BPError:
+        if isinstance(tag, dict):   # the hash is gone or not understood: never fall back to a number
+            raise _SnapshotGone() from None
+        raise
     try:
         (res,) = abi_decode(AGG3_OUT, _hex(raw))
     except BPError as e:
@@ -547,6 +568,35 @@ def _block_of(r, pin) -> int:
     return n
 
 
+def _measure(cid: int, tok: str, dol: str, weth: str, amt: int, n: int, at: dict, call):
+    """Every aggregate of one measurement at the block hash `at` (number n). The dollar token: its decimals;
+    else (token decimals, dollar decimals, vias). Raises _SnapshotGone when the node stops serving that hash."""
+    if tok == dol:   # the dollar token itself: 1 USD per unit; block and decimals still read on-chain
+        res = call([_block_call(cid), _call3(dol, SEL_DECIMALS)], at)
+        _block_of(res[0], n)
+        return _uint_result(res[1], ["uint8"])
+    specs = [([tok, dol], [(tok, dol, amt)])]
+    if tok != weth:
+        specs.append(([tok, weth, dol], [(tok, weth, amt), (weth, dol, 10**18)]))
+
+    def calls(sp):
+        return [_plan_call(cid, a, b, x) for _, legs in sp for a, b, x in legs]
+
+    head = [_block_call(cid), _call3(tok, SEL_DECIMALS), _call3(dol, SEL_DECIMALS)]
+    res = call(head + calls(specs), at)
+    _block_of(res[0], n)
+    dt, dd = _uint_result(res[1], ["uint8"]), _uint_result(res[2], ["uint8"])
+    vias, direct = _vias_from(res[3:], specs)
+    found = _route_tokens(direct, {tok, dol, weth})[:MAX_VIAS - len(specs)] if direct else []
+    if found:   # every via again in ONE eth_call pinned at the same block HASH
+        specs += [([tok, x, dol], [(tok, x, amt), (x, dol, ref)]) for x, ref in found]
+        res2 = call([_block_call(cid), *calls(specs)], at)
+        if _uint_result(res2[0], ["uint256"]) != n:
+            raise BPError("rpc_error", "your RPC did not honour the block pin of the second request")
+        vias, _ = _vias_from(res2[1:], specs)
+    return dt, dd, vias
+
+
 def usd_value(chain, token: str, amount_in, block=None) -> dict:
     cid = resolve_chain(chain)
     weth = CHAINS[cid]["tokens"]["WETH"].lower()
@@ -564,38 +614,34 @@ def usd_value(chain, token: str, amount_in, block=None) -> dict:
     if int(rpc(url, "eth_chainId", []), 16) != cid:
         raise BPError("rpc_wrong_chain", f"your RPC for {CHAINS[cid]['name']} serves another chain")
     tag = "latest" if pin is None else hex(pin)
-    if tok == dol:   # the dollar token itself: 1 USD per unit; block and decimals still read on-chain
-        res = _multicall(url, [_block_call(cid), _call3(dol, SEL_DECIMALS)], tag)
-        n = _block_of(res[0], pin)
-        dd = _uint_result(res[1], ["uint8"])
-        out.update(blockNumber=str(n), tokenDecimals=dd, dollarDecimals=dd, usdValue=str(amt), rpc={"requests": 1},
+    sent = [0]
+
+    def call(calls, at):
+        sent[0] += 1
+        return _multicall(url, calls, at)
+
+    for _ in range(SNAPSHOT_TRIES):
+        n, at = _snapshot(url, tag)
+        if pin is not None and n != pin:
+            raise BPError("rpc_error", "your RPC did not answer at the requested block")
+        try:
+            got = _measure(cid, tok, dol, weth, amt, n, at, call)
+        except _SnapshotGone:
+            continue    # restart discovery on a new snapshot; never reuse candidates from the lost one
+        break
+    else:
+        out["rpc"] = {"requests": sent[0]}
+        return out      # no block hash held for both aggregates: not measured, never a value
+    if tok == dol:
+        dd = got
+        out.update(blockNumber=str(n), tokenDecimals=dd, dollarDecimals=dd, usdValue=str(amt), rpc={"requests": sent[0]},
                    vias=[{"path": [dol], "status": "identity", "usd": str(amt), "legs": []}])
         if dd is not None:
             out.update(usd=format_units(amt, dd), unitPrice=format_units(amt * 10 ** (dd + 18) // (amt * 10 ** dd), 18))
         return out
-    specs = [([tok, dol], [(tok, dol, amt)])]
-    if tok != weth:
-        specs.append(([tok, weth, dol], [(tok, weth, amt), (weth, dol, 10**18)]))
-
-    def calls(sp):
-        return [_plan_call(cid, a, b, x) for _, legs in sp for a, b, x in legs]
-
-    head = [_block_call(cid), _call3(tok, SEL_DECIMALS), _call3(dol, SEL_DECIMALS)]
-    res = _multicall(url, head + calls(specs), tag)
-    n = _block_of(res[0], pin)
-    dt, dd = _uint_result(res[1], ["uint8"]), _uint_result(res[2], ["uint8"])
-    vias, direct = _vias_from(res[3:], specs)
-    found = _route_tokens(direct, {tok, dol, weth})[:MAX_VIAS - len(specs)] if direct else []
-    requests = 1
-    if found:   # every via again in ONE eth_call pinned at the same block
-        specs += [([tok, x, dol], [(tok, x, amt), (x, dol, ref)]) for x, ref in found]
-        res2 = _multicall(url, [_block_call(cid)] + calls(specs), hex(n))
-        if _uint_result(res2[0], ["uint256"]) != n:
-            raise BPError("rpc_error", "your RPC did not honour the block pin of the second request")
-        vias, _ = _vias_from(res2[1:], specs)
-        requests = 2
+    dt, dd, vias = got
     measured = [int(v["usd"]) for v in vias if v["status"] == "measured"]
-    out.update(blockNumber=str(n), tokenDecimals=dt, dollarDecimals=dd, vias=vias, rpc={"requests": requests})
+    out.update(blockNumber=str(n), tokenDecimals=dt, dollarDecimals=dd, vias=vias, rpc={"requests": sent[0]})
     if measured:
         usd = min(measured)   # conservative: the least any via says the amount is worth
         out["usdValue"] = str(usd)

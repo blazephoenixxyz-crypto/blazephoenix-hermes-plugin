@@ -48,7 +48,7 @@ MUTANTS = {
     "M37 USD identity branch dropped": ("if tok == dol:   # the dollar token itself", "if False:   # the dollar token itself"),
     "M38 USD WETH via for WETH": ("if tok != weth:", "if True:"),
     "M39 USD requested block not checked": ("if n is None or (pin is not None and n != pin):", "if n is None:"),
-    "M40 USD second request at latest": ("calls(specs), hex(n))", 'calls(specs), "latest")'),
+    "M40 USD second request at latest": ("*calls(specs)], at)", '*calls(specs)], "latest")'),
     "M41 USD pin of request 2 not checked": ('if _uint_result(res2[0], ["uint256"]) != n:', "if False:"),
     "M42 USD route tokens not deduplicated": ("skip.add(t)", "pass"),
     "M43 USD cap of 9 vias": ("MAX_VIAS = 8", "MAX_VIAS = 9"),
@@ -72,6 +72,14 @@ MUTANTS = {
     "M61 USD block from Multicall3 on Arbitrum": ("if cid in ARBSYS_BLOCK_CHAINS else", "if False else"),
     "M62 USD Robinhood left out of ArbSys": ("ARBSYS_BLOCK_CHAINS = (42161, 4663)", "ARBSYS_BLOCK_CHAINS = (42161,)"),
     "M63 USD ArbSys on every chain": ("if cid in ARBSYS_BLOCK_CHAINS else", "if True else"),
+    "M64 USD second aggregate pinned by number": ("res2 = call([_block_call(cid), *calls(specs)], at)",
+                                                  "res2 = call([_block_call(cid), *calls(specs)], hex(n))"),
+    "M65 USD lost hash not retried": ("SNAPSHOT_TRIES = 2", "SNAPSHOT_TRIES = 1"),
+    "M65b USD lost hash retried twice": ("SNAPSHOT_TRIES = 2", "SNAPSHOT_TRIES = 3"),
+    "M66 USD both aggregates pinned by number": ('return int(num, 16), {"blockHash": bh.lower(), "requireCanonical": True}',
+                                                 "return int(num, 16), num"),
+    "M67 USD header read at latest": ("n, at = _snapshot(url, tag)", 'n, at = _snapshot(url, "latest")'),
+    "M68 USD header number not checked against the pin": ("if pin is not None and n != pin:", "if False:"),
     "M21 URL echoed in errors": ("{'your RPC' if secret else urllib.parse.urlsplit(url).netloc}", "{url}"),
 }
 
