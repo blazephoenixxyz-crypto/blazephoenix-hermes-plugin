@@ -27,13 +27,23 @@ LEG = [ZERO, ZERO, 0, 0, 0, False, False, 0, 0, "0x" + "00" * 32]
 
 
 def preview(net, hops):
-    route = [[[a, b, amt, 0, [LEG]] for a, b, amt in hops], 0, 0, 0, 0, 0, 0, False, False]
+    """hops: (tokenIn, tokenOut, amountIn[, number of legs, default 1])."""
+    route = [[[h[0], h[1], h[2], 0, [LEG] * (h[3] if len(h) > 3 else 1)] for h in hops], 0, 0, 0, 0, 0, 0, False, False]
     pv = [route] + [net if i == 3 else 0 for i in range(10)] + [0, ZERO, True]
     return bp._enc(bp.PREVIEW_OUT, [pv, [[], 0, 0, 0, 0, 0, 0, False, False], False])
 
 
 def error(msg):
     return bytes.fromhex(bp.SEL_ERROR) + eth_abi.encode(["string"], [msg])
+
+
+class Raw(bytes):
+    """A previewPlan call that succeeds with these exact return bytes."""
+
+
+API_BASIS = ("Each via is the netOut the Quoter reports for A in one block: after the 0.28% fee, including price impact; "
+             "an X -> dollar leg is priced at refX and scaled linearly. The value is the minimum over measured vias; "
+             "the dollar token counts as 1 USD.")   # worker/usd.ts USD_BASIS, verbatim
 
 
 class Node:
@@ -54,6 +64,8 @@ class Node:
         if sel == bp.SEL_PLAN and target == bp.CHAINS[8453]["quoter"].lower():
             a, b, amt = eth_abi.decode(["address", "address", "uint256"], args)
             p = self.plans.get((a.lower(), b.lower(), amt), b"")
+            if isinstance(p, Raw):
+                return True, bytes(p)
             return (False, p) if isinstance(p, bytes) else (True, preview(*p))
         return False, b""
 
@@ -104,11 +116,11 @@ def usd(token=T, amount=2 * E18, **kw):
 
 # ---- the parity vector shared with the SDK and the API ------------------------------------------
 
-def test_parity_vector(node):  # mutants: M26 (max instead of min), M27 (scale by outD), M33 (format_units)
+def test_parity_vector(node):  # mutants: M26, M27, M33 (format_units), M48 (bps an int), M49 (basis)
     n = node(parity_plans())
     r = usd()
     assert (r["usdValue"], r["usd"], r["unitPrice"]) == ("3000000", "3", "1.5")
-    assert r["spread"] == {"min": "3000000", "max": "5000000", "diff": "2000000", "bps": 4000}
+    assert r["spread"] == {"min": "3000000", "max": "5000000", "diff": "2000000", "bps": "4000"}
     assert [(v["path"], v["status"], v["usd"]) for v in r["vias"]] == [
         ([T, D], "measured", "5000000"), ([T, W, D], "measured", "3000000")]
     assert r["vias"][1]["scaledFrom"] == str(E18)
@@ -116,14 +128,14 @@ def test_parity_vector(node):  # mutants: M26 (max instead of min), M27 (scale b
                                     {"tokenIn": W, "tokenOut": D, "amountIn": str(E18), "out": "3000000000"}]
     assert (r["label"], r["dollarToken"], r["tokenDecimals"], r["dollarDecimals"]) == ("USD (via USDC)", D, 18, 6)
     assert r["rpc"] == {"requests": 1} and n.calls == [6] and n.tags == ["latest"]
-    assert r["blockNumber"] == str(BLOCK + 1)
+    assert r["blockNumber"] == str(BLOCK + 1) and r["basis"] == API_BASIS
     json.dumps(r)   # JSON-safe: every amount is a decimal string
 
 
 def test_vias_that_agree_have_zero_spread(node):  # mutant: M28 (spread bps divides by min)
     node({(T, D, 2 * E18): (3_000_000, [(T, D, 2 * E18)]), (T, W, 2 * E18): (10**15, [(T, W, 2 * E18)]),
           (W, D, E18): (3_000_000_000, [(W, D, E18)])})
-    assert usd()["spread"] == {"min": "3000000", "max": "3000000", "diff": "0", "bps": 0}
+    assert usd()["spread"] == {"min": "3000000", "max": "3000000", "diff": "0", "bps": "0"}
 
 
 @pytest.mark.parametrize("lo,hi,bps", [(1, 3, 6666), (9_999, 10_000, 1), (1, 10**30, 9999)])
@@ -131,26 +143,26 @@ def test_spread_bps_rounds_down(node, lo, hi, bps):  # mutant: M28 (bps over min
     node({(T, D, 2 * E18): (hi, [(T, D, 2 * E18)]), (T, W, 2 * E18): (E18, [(T, W, 2 * E18)]),
           (W, D, E18): (lo, [(W, D, E18)])})
     r = usd()
-    assert r["spread"]["bps"] == bps and r["usdValue"] == str(lo)
+    assert r["spread"]["bps"] == str(bps) and r["usdValue"] == str(lo)
 
 
 # ---- absent is not zero ---------------------------------------------------------------------------
 
-def test_one_via_reverts_the_others_still_count(node):  # mutant: M29 (allowFailure false)
+def test_one_via_reverts_the_others_still_count(node):  # mutants: M29 (allowFailure false), M50 (scaledFrom only when measured)
     p = parity_plans()
     p[(W, D, E18)] = error("no route")
     r = usd() if node(p) else None
-    assert r["vias"][1]["status"] == "not measured" and r["vias"][1]["reason"] == "leg 2: reverted: no route"
+    assert r["vias"][1]["status"] == "not measured" and r["vias"][1]["reason"] == "call reverted: Error(no route)"
     assert r["vias"][1]["legs"][0]["out"] == str(10**15) and "out" not in r["vias"][1]["legs"][1]
-    assert "usd" not in r["vias"][1]
+    assert "usd" not in r["vias"][1] and r["vias"][1]["scaledFrom"] == str(E18)
     assert r["usdValue"] == "5000000" and r["spread"] is None
 
 
-def test_all_vias_fail_is_not_measured_never_zero(node):  # mutant: M30 (netOut 0 counted as a value)
+def test_all_vias_fail_is_not_measured_never_zero(node):  # mutants: M30 (netOut 0 counted), M51 (leg prefix)
     node({(T, D, 2 * E18): (0, [(T, D, 2 * E18)]), (T, W, 2 * E18): b"\x12\x34\x56\x78"})
     r = usd()
     assert r["usdValue"] is None and r["usd"] == "not measured" and r["unitPrice"] == "not measured"
-    assert [v["reason"] for v in r["vias"]] == ["netOut is 0", "leg 1: reverted (selector 0x12345678)"]
+    assert [v["reason"] for v in r["vias"]] == ["netOut is 0", "call reverted (0x12345678)"]
     assert r["spread"] is None and "0" not in (r["usd"], r["unitPrice"])
 
 
@@ -158,17 +170,19 @@ def test_empty_route_is_not_measured(node):  # mutant: M31 (0-hop route accepted
     p = parity_plans()
     p[(T, D, 2 * E18)] = (5_000_000, [])
     r = usd() if node(p) else None
-    assert r["vias"][0] == {"path": [T, D], "status": "not measured", "reason": "route has 0 hops",
+    assert r["vias"][0] == {"path": [T, D], "status": "not measured", "reason": "empty route",
                             "legs": [{"tokenIn": T, "tokenOut": D, "amountIn": str(2 * E18)}]}
     assert r["usdValue"] == "3000000" and r["spread"] is None
 
 
-def test_value_below_one_unit_is_not_measured(node):  # mutant: M32 (a scaled 0 counted as a value)
+def test_value_below_one_unit_is_not_measured(node):  # mutants: M32 (a scaled 0 counted as a value), M50
     p = parity_plans()
     p[(T, W, 2 * E18)] = (1, [(T, W, 2 * E18)])
     p[(W, D, E18)] = (E18 - 1, [(W, D, E18)])          # 1 * (1e18 - 1) // 1e18 == 0
     r = usd() if node(p) else None
     assert r["vias"][1]["status"] == "not measured" and r["usdValue"] == "5000000"
+    assert (r["vias"][1]["reason"], r["vias"][1]["scaledFrom"]) == ("scaled value is 0", str(E18))
+    assert "usd" not in r["vias"][1]
 
 
 def test_decimals_failure_leaves_unit_price_not_measured(node):  # mutant: M34 (unit price without dT)
@@ -183,6 +197,91 @@ def test_dollar_decimals_failure_leaves_usd_not_measured(node):  # mutant: M35 (
     r = usd()
     assert r["dollarDecimals"] is None and r["usd"] == "not measured" and r["unitPrice"] == "not measured"
     assert r["usdValue"] == "3000000"
+
+
+# ---- reasons and route shape, as worker/usd.ts words them ------------------------------------------
+
+def custom(sig, types, args):
+    keccak = pytest.importorskip("Crypto.Hash.keccak")
+    return bytes.fromhex(keccak.new(digest_bits=256, data=sig.encode()).hexdigest()[:8]) + eth_abi.encode(types, args)
+
+
+@pytest.mark.parametrize("data,reason", [
+    (b"", "call reverted (no reason)"),
+    ("Error", "call reverted: Error(no route)"),
+    (("Panic(uint256)", ["uint256"], [17]), "call reverted: Panic(17)"),
+    (("QuoterE(uint16)", ["uint16"], [3]), "call reverted: QuoterE(3)"),
+    (("SolverE(uint16)", ["uint16"], [65535]), "call reverted: SolverE(65535)"),
+    (("HubE(uint16)", ["uint16"], [0]), "call reverted: HubE(0)"),
+    (("RouterE(uint16)", ["uint16"], [7]), "call reverted: RouterE(7)"),
+    (("GateQuoteCall(uint256)", ["uint256"], [2**256 - 1]), "call reverted: GateQuoteCall(%d)" % (2**256 - 1)),
+    (("InputProbe(bool)", ["bool"], [True]), "call reverted: InputProbe(true)"),
+    (("InputProbe(bool)", ["bool"], [False]), "call reverted: InputProbe(false)"),
+    (("QuoteDeltas(int256,int256)", ["int256", "int256"], [-5, 2**255 - 1]), "call reverted: QuoteDeltas(-5, %d)" % (2**255 - 1)),
+    (b"\x12\x34\x56\x78", "call reverted (0x12345678)"),
+    (b"\x12\x34\x56\x78" + bytes(32), "call reverted (0x12345678)"),
+    (b"\x12", "call reverted (0x12)"),
+])
+def test_revert_reasons_match_the_api(node, data, reason):  # mutants: M52 (empty data), M53 (error table), M54 (bool words)
+    if data == "Error":
+        data = error("no route")
+    elif isinstance(data, tuple):
+        data = custom(*data)
+    p = parity_plans()
+    p[(T, D, 2 * E18)] = data
+    r = usd() if node(p) else None
+    assert r["vias"][0]["reason"] == reason and r["usdValue"] == "3000000"
+
+
+@pytest.mark.parametrize("sig", ["Panic(uint256)", "QuoterE(uint16)", "InputProbe(bool)", "QuoteDeltas(int256,int256)"])
+def test_custom_error_with_a_short_payload_is_named_by_selector(node, sig):  # mutant: M60 (short payload raises)
+    data = custom(sig, [], [])
+    p = parity_plans()
+    p[(T, D, 2 * E18)] = data
+    r = usd() if node(p) else None
+    assert r["vias"][0]["reason"] == "call reverted (0x%s)" % data[:4].hex()
+
+
+def test_first_failing_leg_gives_the_reason(node):  # mutant: M55 (last failing leg)
+    p = parity_plans()
+    p[(T, W, 2 * E18)] = error("first")
+    p[(W, D, E18)] = error("second")
+    r = usd() if node(p) else None
+    assert r["vias"][1]["reason"] == "call reverted: Error(first)" and "out" not in r["vias"][1]["legs"][0]
+
+
+@pytest.mark.parametrize("raw", [b"", b"\x00" * 31, b"\xff" * 64])
+def test_undecodable_quoter_result_is_not_measured(node, raw):  # mutant: M56 (decode failure wording)
+    p = parity_plans()
+    p[(W, D, E18)] = Raw(raw)
+    r = usd() if node(p) else None
+    assert (r["vias"][1]["status"], r["vias"][1]["reason"]) == ("not measured", "undecodable Quoter result")
+    assert r["usdValue"] == "5000000"
+
+
+@pytest.mark.parametrize("key,hops", [
+    ((T, D, 2 * E18), [(T, W, 2 * E18)]),                              # direct: ends elsewhere
+    ((T, D, 2 * E18), [(W, D, 2 * E18)]),                              # direct: starts elsewhere
+    ((T, D, 2 * E18), [(T, X[0], 2 * E18), (X[1], D, 10**6)]),         # direct: hops do not chain
+    ((T, D, 2 * E18), [(T, D, 2 * E18, 0)]),                           # direct: a hop with no venue leg
+    ((T, W, 2 * E18), [(T, D, 2 * E18)]),                              # leg 1 of the WETH via
+    ((W, D, E18), [(T, D, E18)]),                                      # leg 2 of the WETH via
+])
+def test_route_that_does_not_connect_the_leg_is_not_measured(node, key, hops):  # mutant: M57 (route shape per leg)
+    p = parity_plans()
+    p[key] = (9 * 10**6, hops)
+    n = node(p)
+    r = usd()
+    bad = 0 if key[1] == D and key[0] == T else 1
+    assert (r["vias"][bad]["status"], r["vias"][bad]["reason"]) == ("not measured", "route does not connect the leg tokens")
+    assert r["usdValue"] == ("3000000" if bad == 0 else "5000000") and r["rpc"]["requests"] == 1 and len(n.calls) == 1
+
+
+def test_disconnected_direct_route_discovers_nothing(node):  # mutant: M57
+    p = routed([X[0]], 10**6)
+    p[(T, D, 2 * E18)] = (5_000_000, [(T, X[0], 2 * E18), (X[1], D, 10**6)])
+    r = usd() if node(p) else None
+    assert r["rpc"]["requests"] == 1 and len(r["vias"]) == 2 and r["usdValue"] == "3000000"
 
 
 # ---- inputs and anchors ---------------------------------------------------------------------------
@@ -283,6 +382,14 @@ def test_at_most_eight_vias(node):  # mutant: M43 (cap of 9)
     assert n.calls == [6, 1 + 1 + 2 + 2 * 6] and r["rpc"]["requests"] == 2
 
 
+@pytest.mark.parametrize("ref,found", [(2**128 - 1, True), (2**128, False), (2**256 - 1, False)])
+def test_route_amount_above_the_router_cap_adds_no_via(node, ref, found):  # mutants: M58 (cap dropped), M59 (cap off by one)
+    n = node(routed([X[0]], ref))
+    r = usd()
+    assert [v["path"] for v in r["vias"]][2:] == ([[T, X[0], D]] if found else [])
+    assert r["rpc"]["requests"] == (2 if found else 1) and len(n.calls) == (2 if found else 1)
+
+
 def test_failed_direct_quote_discovers_nothing(node):
     p = routed([X[0]], 10**6)
     p[(T, D, 2 * E18)] = error("paused")
@@ -298,6 +405,9 @@ def test_usd_selectors_match_their_signatures():  # mutant: M44 (previewPlan sel
                      (bp.SEL_AGG3, "aggregate3((address,bool,bytes)[])"),
                      (bp.SEL_BLOCK, "getBlockNumber()"), (bp.SEL_DECIMALS, "decimals()"),
                      (bp.SEL_ERROR, "Error(string)")]:
+        assert keccak.new(digest_bits=256, data=sig.encode()).hexdigest()[:8] == sel, sig
+    for sel, (name, types) in bp.USD_ERRORS.items():   # mutant: M53 (error table selector)
+        sig = f"{name}({','.join(types)})"
         assert keccak.new(digest_bits=256, data=sig.encode()).hexdigest()[:8] == sel, sig
 
 
@@ -329,7 +439,7 @@ def test_lying_bytes_length_is_refused_even_when_not_strict(extra):  # mutant: M
     bad = good[:32] + (3 + 29 + extra).to_bytes(32, "big") + good[64:]
     with pytest.raises(bp.BPError):
         bp.abi_decode(["bytes"], bad, strict=False)
-    assert bp._revert_reason("0x" + bp.SEL_ERROR + bad.hex()) == "reverted (selector 0x08c379a0)"
+    assert bp._revert_reason("0x" + bp.SEL_ERROR + bad.hex()) == "call reverted (0x08c379a0)"
 
 
 def test_bad_multicall_answers_fail_closed(monkeypatch):

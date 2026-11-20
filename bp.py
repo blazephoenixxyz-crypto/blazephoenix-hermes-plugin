@@ -390,13 +390,19 @@ SEL_AGG3 = "82ad56cb"       # aggregate3((address,bool,bytes)[])
 SEL_BLOCK = "42cbb15c"      # getBlockNumber()
 SEL_DECIMALS = "313ce567"   # decimals()
 SEL_ERROR = "08c379a0"      # Error(string)
+# Revert data named the way worker/usd.ts names it (viem decodeErrorResult over BLAZE_ERRORS_ABI): selector -> (name, types)
+USD_ERRORS = {SEL_ERROR: ("Error", ["string"]), "4e487b71": ("Panic", ["uint256"]),
+              "cfcad14c": ("GateQuoteCall", ["uint256"]), "c85d7a0e": ("InputProbe", ["bool"]),
+              "3940bcb0": ("QuoteDeltas", ["int256", "int256"]), "765afc20": ("QuoterE", ["uint16"]),
+              "3d0ccdde": ("SolverE", ["uint16"]), "9a3fb915": ("HubE", ["uint16"]), "62b0a386": ("RouterE", ["uint16"])}
 AGG3_IN = [(["address", "bool", "bytes"],)]
 AGG3_OUT = [(["bool", "bytes"],)]
 MAX_VIAS = 8                # direct included; every via has at most 2 hops of tokens (T -> X -> dollar)
 MAX_USD_AMOUNT = (1 << 128) - 1
 NOT_MEASURED = "not measured"
-USD_BASIS = ("netOut actually received for amountIn after the 0.28% fee, including price impact; "
-             "X->dollar legs are priced at refX and scaled linearly, so their impact is the impact at refX")
+USD_BASIS = ("Each via is the netOut the Quoter reports for A in one block: after the 0.28% fee, including price impact; "
+             "an X -> dollar leg is priced at refX and scaled linearly. The value is the minimum over measured vias; "
+             "the dollar token counts as 1 USD.")   # worker/usd.ts USD_BASIS, verbatim
 
 
 def dollar_token(cid: int) -> tuple:
@@ -436,27 +442,35 @@ def _multicall(url: str, calls: list, tag: str) -> list:
 
 
 def _revert_reason(ret: str) -> str:
+    """'call reverted (no reason)', 'call reverted: Name(args)' or 'call reverted (0xselector)', as worker/usd.ts."""
     b = _hex(ret)
-    if b[:4].hex() == SEL_ERROR:
+    if not b:
+        return "call reverted (no reason)"
+    name, types = USD_ERRORS.get(b[:4].hex(), (None, []))
+    if name:
         try:
-            msg = bytes.fromhex(abi_decode(["bytes"], b[4:], strict=False)[0][2:])
-            return "reverted: " + msg.decode("utf-8", "replace")[:200]
+            args = abi_decode(["bytes" if t == "string" else t for t in types], b[4:], strict=False)
+            words = [bytes.fromhex(a[2:]).decode("utf-8", "replace")[:200] if t == "string"
+                     else str(a).lower() if t == "bool" else str(a) for t, a in zip(types, args)]
+            return f"call reverted: {name}({', '.join(words)})"
         except BPError:
             pass
-    return "reverted" + (f" (selector 0x{b[:4].hex()})" if b else "")
+    return f"call reverted (0x{b[:4].hex()})"
 
 
-def _preview(r) -> tuple:
-    """(preview, None) for a usable previewPlan answer, else (None, reason). Absent is not zero."""
+def _preview(r, tin: str, tout: str) -> tuple:
+    """(preview, None) for a usable previewPlan answer of the leg tin -> tout, else (None, reason). Absent is not zero."""
     ok, ret = r
     if not ok:
         return None, _revert_reason(ret)
     try:
         pv = dict(zip(PV_FIELDS, abi_decode(PREVIEW_OUT, _hex(ret), strict=False)[0]))
-    except BPError as e:
-        return None, f"answer does not decode ({e})"
+    except BPError:
+        return None, "undecodable Quoter result"
     if not pv["route"][0]:
-        return None, "route has 0 hops"
+        return None, "empty route"
+    if not route_consistent(pv["route"], tin, tout):
+        return None, "route does not connect the leg tokens"
     if pv["netOut"] == 0:
         return None, "netOut is 0"
     return pv, None
@@ -477,27 +491,27 @@ def _vias_from(results: list, specs: list) -> tuple:
     vias, k, direct = [], 0, None
     for path, legs in specs:
         pvs = []
-        for _ in legs:
-            pvs.append(_preview(results[k]))
+        for a, b, _ in legs:
+            pvs.append(_preview(results[k], a, b))
             k += 1
         via = {"path": path, "legs": [{"tokenIn": a, "tokenOut": b, "amountIn": str(amt),
                                        **({"out": str(pv["netOut"])} if pv else {})}
                                       for (a, b, amt), (pv, _) in zip(legs, pvs)]}
         if len(legs) == 1:
             direct = pvs[0][0]
-        bad = [(i, why) for i, (pv, why) in enumerate(pvs) if pv is None]
+        bad = [why for pv, why in pvs if pv is None]
+        if len(legs) > 1:   # a two-leg via names its refX, measured or not
+            via["scaledFrom"] = str(legs[1][2])
         if bad:
-            i, why = bad[0]
-            via.update(status=NOT_MEASURED, reason=why if len(legs) == 1 else f"leg {i + 1}: {why}")
+            via.update(status=NOT_MEASURED, reason=bad[0])   # the first leg that failed
         else:
             if len(legs) == 1:
                 usd = pvs[0][0]["netOut"]
             else:
                 ref = legs[1][2]
                 usd = pvs[0][0]["netOut"] * pvs[1][0]["netOut"] // ref
-                via["scaledFrom"] = str(ref)
             if usd == 0:
-                via.update(status=NOT_MEASURED, reason="value is below one base unit of the dollar token")
+                via.update(status=NOT_MEASURED, reason="scaled value is 0")
             else:
                 via.update(status="measured", usd=str(usd))
         vias.append(via)
@@ -512,7 +526,7 @@ def _route_tokens(pv, skip: set) -> list:
             if t not in skip:
                 skip.add(t)
                 ref = next((h[2] for h in pv["route"][0] if h[0] == t), 0)
-                if ref:
+                if 0 < ref <= MAX_USD_AMOUNT:   # a refX above the Router cap is no via
                     out.append((t, ref))
     return out
 
@@ -582,5 +596,5 @@ def usd_value(chain, token: str, amount_in, block=None) -> dict:
             out["unitPrice"] = format_units(usd * 10 ** (dt + 18) // (amt * 10 ** dd), 18)
     if len(measured) >= 2:
         lo, hi = min(measured), max(measured)
-        out["spread"] = {"min": str(lo), "max": str(hi), "diff": str(hi - lo), "bps": (hi - lo) * 10_000 // hi}
+        out["spread"] = {"min": str(lo), "max": str(hi), "diff": str(hi - lo), "bps": str((hi - lo) * 10_000 // hi)}
     return out

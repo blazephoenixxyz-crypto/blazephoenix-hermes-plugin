@@ -47,7 +47,7 @@ The Router also enforces the minimum output on-chain: a worse fill reverts.
 ## Tests
 
 ```bash
-python -m pytest            # 380 offline tests: ABI codec vs eth-abi, selectors, verification, Phoenix Check, USD value
+python -m pytest            # 415 offline tests: ABI codec vs eth-abi, selectors, verification, Phoenix Check, USD value
 BLAZEPHOENIX_RPC_BASE=<your Base node> python -m pytest   # + 11 live tests on Base, including a lying-server suite
 python tests/mutants.py     # 47 code mutants, each must turn the suite red
 ```

@@ -67,7 +67,7 @@ def test_usd_value_of_a_quote_output_on_base(token_in, amount):
     r = q("base", AAPLC, str(out))
     measured = [int(v["usd"]) for v in r["vias"] if v["status"] == "measured"]
     assert len(measured) >= 2 and int(r["usdValue"]) == min(measured) > 0
-    assert r["spread"]["bps"] == (max(measured) - min(measured)) * 10_000 // max(measured)
+    assert r["spread"]["bps"] == str((max(measured) - min(measured)) * 10_000 // max(measured))
 
 
 def _tamper(monkeypatch, path, edit):
