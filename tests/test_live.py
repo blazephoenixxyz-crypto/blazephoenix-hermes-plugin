@@ -52,8 +52,15 @@ AAPLC = "0xb200000000000000000000C2e324d24d7eEcd1fb"
 
 def test_usd_value_of_weth_on_base():
     r = bp.usd_value("base", "WETH", str(10**16))
-    assert r["rpc"]["requests"] == 1 and r["label"] == "USD (via USDC)" and r["tokenDecimals"] == 18
-    assert [v["status"] for v in r["vias"]] == ["measured"] and int(r["usdValue"]) > 0
+    w, d = (bp.CHAINS[8453]["tokens"][k].lower() for k in ("WETH", "USDC"))
+    vias = r["vias"]
+    # 1 request, or 2 when the direct WETH -> USDC route goes through a token X (a WETH -> X -> USDC via)
+    assert r["rpc"]["requests"] == (1 if len(vias) == 1 else 2) and r["label"] == "USD (via USDC)"
+    assert vias[0]["path"] == [w, d] and vias[0]["status"] == "measured" and r["tokenDecimals"] == 18
+    assert all(len(v["path"]) == 3 and v["path"][0] == w and v["path"][2] == d and v["path"][1] not in (w, d)
+               for v in vias[1:])
+    measured = [int(v["usd"]) for v in vias if v["status"] == "measured"]
+    assert int(r["usdValue"]) == min(measured) > 0
     assert r["usd"] != "not measured" and int(r["blockNumber"]) > 0
 
 
