@@ -304,6 +304,23 @@ def test_json_rpc_error_with_a_short_credential_is_withheld(monkeypatch, secret)
     assert e.value.code == "rpc_error" and "a1b" not in str(e.value) and "withheld" in str(e.value)
 
 
+def test_json_rpc_error_short_path_segment_removed_where_it_stands_alone(monkeypatch):  # mutant: M75
+    """A path segment under four characters is removed as a word of its own, and only there."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": "invalid key abc for abcdef"}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc("https://node.invalid/v3/abc", "eth_chainId", [])
+    assert str(e.value).endswith("invalid key [redacted] for abcdef")
+
+
+def test_json_rpc_error_message_not_a_string_is_withheld(monkeypatch):  # mutant: M76
+    """A non-string message is never converted to text: its printed form can carry the key in a
+    shape the scrub does not match (a doubled backslash here)."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": ["KEY\\secret1234"]}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc("https://node.invalid/KEY%5Csecret1234", "eth_chainId", [])
+    assert "secret1234" not in str(e.value) and "withheld" in str(e.value)
+
+
 def test_json_rpc_error_text_scrubbed_in_linear_time(monkeypatch):  # mutant: M74
     """A node message of scheme-like characters with no '://' must not make the scrub quadratic."""
     monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": "a" * 30_000}})
