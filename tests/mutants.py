@@ -81,6 +81,8 @@ MUTANTS = {
     "M67 USD header read at latest": ("n, at = _snapshot(url, tag)", 'n, at = _snapshot(url, "latest")'),
     "M68 USD header number not checked against the pin": ("if pin is not None and n != pin:", "if False:"),
     "M21 URL echoed in errors": ("{'your RPC' if secret else urllib.parse.urlsplit(url).netloc}", "{url}"),
+    "M69 node error text not scrubbed": ("{_scrub(str(msg), url)[:200]}", "{str(msg)[:200]}"),
+    "M70 key pieces not removed": ('text = re.sub(re.escape(p), "[redacted]", text, flags=re.I)', "pass"),
 }
 
 # Known survivors: these two also survive on main. Kept here so CI fails only on a NEW survivor.

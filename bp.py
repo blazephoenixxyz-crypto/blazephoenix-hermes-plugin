@@ -15,6 +15,7 @@ Nothing here signs, sends a transaction or touches a private key. Standard libra
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -226,11 +227,27 @@ def rpc_url(cid: int) -> str:
     return url
 
 
+_URL = re.compile(r"([a-z][a-z0-9+.-]*://)[^\s'\"<>]+", re.I)
+
+
+def _scrub(text: str, secret: str) -> str:
+    """Node text with the RPC URL taken out: every piece of the URL that can carry a key (path
+    segments, query values, user info, host) is removed, then any URL left keeps only its scheme."""
+    s = urllib.parse.urlsplit(secret)
+    parts = [secret, secret.split("://", 1)[-1], s.netloc, s.path, s.query, s.username or "", s.password or ""]
+    parts += [p for p in s.path.split("/") if p]
+    parts += [v for _, v in urllib.parse.parse_qsl(s.query)]
+    for p in sorted({p for p in parts if len(p) >= 4}, key=len, reverse=True):
+        text = re.sub(re.escape(p), "[redacted]", text, flags=re.I)
+    return _URL.sub(r"\1[redacted]", text)
+
+
 def rpc(url: str, method: str, params: list):
     r = _http(url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, secret=url)
     if not isinstance(r, dict) or "result" not in r:
-        err = (r or {}).get("error", {}) if isinstance(r, dict) else {}
-        raise BPError("rpc_error", f"your RPC answered an error: {str(err.get('message', 'no result'))[:200]}")
+        err = r.get("error") if isinstance(r, dict) else None
+        msg = err.get("message", "no result") if isinstance(err, dict) else "no result"
+        raise BPError("rpc_error", f"your RPC answered an error: {_scrub(str(msg), url)[:200]}")
     return r["result"]
 
 
