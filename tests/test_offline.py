@@ -7,6 +7,7 @@ import json
 import pathlib
 import random
 import sys
+import time
 
 import pytest
 
@@ -268,6 +269,73 @@ def test_network_errors_never_echo_the_rpc_url(monkeypatch):
     with pytest.raises(bp.BPError) as e:
         bp.rpc(secret, "eth_chainId", [])
     assert "SECRET" not in str(e.value) and "node.invalid" not in str(e.value)
+
+
+@pytest.mark.parametrize("secret, echo", [
+    ("https://eth-mainnet.infura.io/v3/KEY0123456789abcdef", "Invalid API key: {url}"),
+    ("https://eth-mainnet.infura.io/v3/KEY0123456789abcdef", "unknown project /v3/{key}"),
+    ("https://eth-mainnet.infura.io/v3/KEY0123456789abcdef", "bad key {KEY}"),
+    ("https://node.invalid/rpc?apikey=KEY0123456789abcdef", "rejected {url}"),
+    ("https://user:KEY0123456789abcdef@node.invalid/", "auth failed for {url}"),
+    ("https://KEY0123456789abcdef.rpc.invalid/", "no such client KEY0123456789abcdef.rpc.invalid"),
+    ("https://node.invalid/v2/KEY0123456789abcdef", "see https://other.invalid/v2/KEY0123456789abcdef/x"),
+    ("https://KEY0123456789abcdef.rpc.invalid:8545/", "host KEY0123456789abcdef.rpc.invalid refused"),
+    ("https://node.invalid/v2/KEY0123456789abcdef%2Fz", "unknown key KEY0123456789abcdef/z"),
+])
+def test_json_rpc_errors_never_echo_the_rpc_key(monkeypatch, secret, echo):  # mutants: M69-M72
+    """A node that answers HTTP 200 with a JSON-RPC error quoting its own endpoint must not put the key
+    in the tool output: the transport branch above is guarded, this one carries the node's own text."""
+    key = "KEY0123456789abcdef"
+    msg = echo.format(url=secret, key=key, KEY=key.upper())
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": msg}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc(secret, "eth_chainId", [])
+    assert e.value.code == "rpc_error"
+    assert key.lower() not in str(e.value).lower()
+
+
+@pytest.mark.parametrize("secret", ["https://node.invalid/rpc?k=a1b", "https://u:a1b@node.invalid/"])
+def test_json_rpc_error_with_a_short_credential_is_withheld(monkeypatch, secret):  # mutant: M73
+    """A query or user-info value under four characters cannot be removed without eating unrelated
+    text, so the node's text is dropped whole rather than trusted."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": "bad credential a1b"}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc(secret, "eth_chainId", [])
+    assert e.value.code == "rpc_error" and "a1b" not in str(e.value) and "withheld" in str(e.value)
+
+
+def test_json_rpc_error_short_path_segment_removed_where_it_stands_alone(monkeypatch):  # mutant: M75
+    """A path segment under four characters is removed as a word of its own, and only there."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": "invalid key abc for abcdef"}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc("https://node.invalid/v3/abc", "eth_chainId", [])
+    assert str(e.value).endswith("invalid key [redacted] for abcdef")
+
+
+def test_json_rpc_error_message_not_a_string_is_withheld(monkeypatch):  # mutant: M76
+    """A non-string message is never converted to text: its printed form can carry the key in a
+    shape the scrub does not match (a doubled backslash here)."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": ["KEY\\secret1234"]}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc("https://node.invalid/KEY%5Csecret1234", "eth_chainId", [])
+    assert "secret1234" not in str(e.value) and "withheld" in str(e.value)
+
+
+def test_json_rpc_error_text_scrubbed_in_linear_time(monkeypatch):  # mutant: M74
+    """A node message of scheme-like characters with no '://' must not make the scrub quadratic."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": "a" * 30_000}})
+    t = time.monotonic()
+    with pytest.raises(bp.BPError):
+        bp.rpc("https://node.invalid/v1/SECRET-KEY", "eth_chainId", [])
+    assert time.monotonic() - t < 1
+
+
+@pytest.mark.parametrize("body", [{"error": "boom"}, {"error": None}, {}, []])
+def test_json_rpc_error_without_a_message_object(monkeypatch, body):
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: body)
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc("https://node.invalid/v1/SECRET", "eth_chainId", [])
+    assert e.value.code == "rpc_error" and "SECRET" not in str(e.value)
 
 
 def test_non_canonical_encoding_is_refused():  # mutant: M8 (canonical check dropped)

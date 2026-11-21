@@ -81,6 +81,14 @@ MUTANTS = {
     "M67 USD header read at latest": ("n, at = _snapshot(url, tag)", 'n, at = _snapshot(url, "latest")'),
     "M68 USD header number not checked against the pin": ("if pin is not None and n != pin:", "if False:"),
     "M21 URL echoed in errors": ("{'your RPC' if secret else urllib.parse.urlsplit(url).netloc}", "{url}"),
+    "M69 node error text not scrubbed": ("clean = _scrub(msg, url) if isinstance(msg, str) else None", "clean = msg if isinstance(msg, str) else None"),
+    "M70 key pieces not removed": ('text = re.sub(re.escape(p), "[redacted]", text, flags=re.I)', "pass"),
+    "M71 bare hostname not removed": ('s.netloc, s.hostname or "", s.path', 's.netloc, "", s.path'),
+    "M72 decoded path segments not removed": ("*(urllib.parse.unquote(p) for p in segs)]", "]"),
+    "M73 short credential trusted": ("if any(len(c) < 4 for c in creds):", "if False:"),
+    "M74 quadratic URL pattern": ('_URL = re.compile(r"://[^\\s\'\\"<>]+")', '_URL = re.compile(r"([a-z][a-z0-9+.-]*://)[^\\s\'\\"<>]+", re.I)'),
+    "M75 short path segments kept": ('text = re.sub(rf"(?<![A-Za-z0-9]){re.escape(p)}(?![A-Za-z0-9])", "[redacted]", text, flags=re.I)', "pass"),
+    "M76 non-string message printed": ("clean = _scrub(msg, url) if isinstance(msg, str) else None", "clean = _scrub(str(msg), url)"),
 }
 
 # Known survivors: these two also survive on main. Kept here so CI fails only on a NEW survivor.
