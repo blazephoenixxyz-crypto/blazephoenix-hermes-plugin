@@ -101,13 +101,19 @@ MUTANTS = {
     "M86 one chain's RPC sealed": ("for cid in CHAINS) if u]", "for cid in list(CHAINS)[:1]) if u]"),
     "M87 short threshold lowered": ("_SHORT = 4 ", "_SHORT = 3 "),
     "M88 revert text cut before the scrub": ('decode("utf-8", "replace") if t == "string"', 'decode("utf-8", "replace")[:200] if t == "string"'),
-    "M89 slash-escaped JSON form missing": (r'return [j, j.replace("/", "\\/")]', "return [j]"),
+    "M89 slash-escaped JSON form missing": (r'forms += [j, j.replace("/", "\\/")]', "forms += [j]"),
     "M90 short segments compared on raw text": ("sk, where = _skel(text)\n    out, last, i = [], 0, sk.find(k)",
                                                 "sk, where = text.lower(), list(range(len(text)))\n    out, last, i = [], 0, sk.find(k)"),
     "M91 seal needs the user info": ('for np in (p["netloc"] + p["path"], p["netloc"].rpartition("@")[2] + p["path"]):', 'for np in (p["netloc"] + p["path"],):'),
     "M92 revert text not cut": ('v["reason"] = _capped(clean) if clean', 'v["reason"] = clean if clean'),
     "M93 revert text not cut once the frame is scrubbed": ("return reason[:len(_ERROR_HEAD) + REVERT_TEXT + 1]", "return reason"),
     "M94 short segment removed inside a word": ("if not any(0 <= j < len(text) and text[j].isascii() and text[j].isalnum() for j in (a - 1, b)):", "if True:"),
+    "M95 ASCII-escaped JSON form missing": ("for ascii_only in (False, True):", "for ascii_only in (False, False):"),
+    "M96 ASCII- and slash-escaped JSON form missing": (r'forms += [j, j.replace("/", "\\/")]',
+                                                       r'forms += [j, j if ascii_only else j.replace("/", "\\/")]'),
+    "M97 slash escaped alone missing": (r'return forms + [s.replace("/", "\\/")]', "return forms"),
+    "M98 slash-escaped form cut into lone pieces": (r'return forms + [s.replace("/", "\\/")]',
+                                                    r'return forms + [s.replace("/", "\\/"), *s.split("/")]'),
 }
 
 # Known survivors: these two also survive on main. Kept here so CI fails only on a NEW survivor.

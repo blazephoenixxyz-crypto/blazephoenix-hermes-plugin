@@ -425,6 +425,37 @@ def test_redact_removes_the_slash_escaped_json_spelling():
         == "[redacted]"
 
 
+def test_scrub_and_seal_remove_the_ascii_escaped_json_spelling():  # mutant: M95
+    """json.dumps with ensure_ascii=True (the default) writes a non-ASCII character as \\uXXXX: a key
+    with an e-acute is also taken out in that spelling, by the node text layer and by seal."""
+    url = "https://rpc.invalid/v2/KEY%C3%A9SECRET1234"
+    assert bp._scrub("{\"error\":\"invalid key KEY\\u00e9SECRET1234\"}", url) == "{\"error\":\"invalid key [redacted]\"}"
+    assert bp.seal("https://rpc.invalid/v2/KEY\\u00e9SECRET1234", [url]) == "[redacted]"
+
+
+def test_seal_removes_the_ascii_and_slash_escaped_json_spelling():  # mutant: M96
+    """Both escapes at once (PHP json_encode without JSON_UNESCAPED_UNICODE): '\\/' and \\uXXXX."""
+    url = "https://rpc.invalid/v2/KEY%C3%A9SECRET1234"
+    assert bp.seal("{\"url\":\"rpc.invalid\\/v2\\/KEY\\u00e9SECRET1234\"}", [url]) == "{\"url\":\"[redacted]\"}"
+
+
+def test_seal_removes_the_slash_escaped_alone_spelling():  # mutant: M97
+    """Only '/' escaped, every other character as written (a raw quote stays a raw quote): the third F3
+    spelling, the same as the MCP server's."""
+    url = "https://rpc.invalid/v2/KEY\"SECRET1234"
+    assert bp.seal("echo rpc.invalid\\/v2\\/KEY\"SECRET1234 end", [url]) == "echo [redacted] end"
+
+
+def test_json_spellings_leave_an_ascii_text_without_the_key_as_it_is():  # mutant: M98
+    """Control: escaped slashes, quotes and a \\uXXXX in a text that holds no piece of the URL stay; seal
+    still never takes out a lone piece (host, segment) in an escaped spelling."""
+    url = "https://rpc.invalid/v2/KEY%C3%A9SECRET1234"
+    text = "{\"error\":\"execution reverted: \\\"slippage\\\" at \\/v3\\/route caf\\u00e9\"}"
+    assert bp._scrub(text, url) == text
+    lone = "{\"host\":\"rpc.invalid\",\"path\":\"\\/v2\\/\",\"note\":\"caf\\u00e9\"}"
+    assert bp.seal(lone, [url]) == lone
+
+
 @pytest.mark.parametrize("text,out", [
     ("invalid key a​bc", "invalid key [redacted]"),         # zero-width space inside the segment
     ("invalid key A­BC.", "invalid key [redacted]."),        # soft hyphen, other case

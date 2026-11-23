@@ -268,9 +268,13 @@ def _skel(s: str) -> tuple:
 
 
 def _json(s: str) -> list:
-    """s JSON-escaped without its quotes, as json.dumps writes it and with every '/' escaped (PHP json_encode)."""
-    j = json.dumps(s, ensure_ascii=False)[1:-1]
-    return [j, j.replace("/", "\\/")]
+    """s JSON-escaped without its quotes, as json.dumps writes it with non-ASCII as written and as \\uXXXX, each
+    with '/' as written and escaped (PHP json_encode); and s with only its '/' escaped (the MCP server's F3)."""
+    forms = []
+    for ascii_only in (False, True):
+        j = json.dumps(s, ensure_ascii=ascii_only)[1:-1]
+        forms += [j, j.replace("/", "\\/")]
+    return forms + [s.replace("/", "\\/")]
 
 
 def _html(s: str) -> str:
@@ -281,7 +285,7 @@ _FORMS = (   # every written form of a piece the node may quote; a new form is a
     lambda a: [a],                                                                         # F0 as configured
     lambda a: [urllib.parse.unquote(a)],                                                   # F1 percent-decoded
     lambda a: [urllib.parse.quote(urllib.parse.unquote(a), safe="!'()*~-._")],             # F2 percent-encoded
-    lambda a: [j for x in (a, urllib.parse.unquote(a)) for j in _json(x)],                # F3 JSON-escaped, '/' plain or escaped
+    lambda a: [j for x in (a, urllib.parse.unquote(a)) for j in _json(x)],                # F3 JSON-escaped (\uXXXX or not), '/' plain or escaped; '/' escaped alone
     lambda a: [_html(x) for x in (a, urllib.parse.unquote(a))],                            # F4 HTML-escaped
 )
 
