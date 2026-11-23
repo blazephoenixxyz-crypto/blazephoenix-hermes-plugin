@@ -100,11 +100,12 @@ CHAINS = {
 
 def _run(fn) -> str:
     try:
-        return json.dumps({"ok": True, "result": fn()})
+        out = {"ok": True, "result": fn()}
     except bp.BPError as e:
-        return json.dumps({"ok": False, "code": e.code, "error": str(e), **({"details": e.details} if e.details else {})})
+        out = {"ok": False, "code": e.code, "error": str(e), **({"details": e.details} if e.details else {})}
     except Exception as e:  # handlers never raise; no URL is ever echoed (bp scrubs network errors)
-        return json.dumps({"ok": False, "code": "error", "error": type(e).__name__})
+        out = {"ok": False, "code": "error", "error": type(e).__name__}
+    return json.dumps(bp.seal(out))   # last check: no answer carries a configured RPC URL
 
 
 def quote(args: dict, **kwargs) -> str:

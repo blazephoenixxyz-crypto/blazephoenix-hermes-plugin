@@ -285,6 +285,32 @@ def test_first_failing_leg_gives_the_reason(node):  # mutant: M55 (last failing 
     assert r["vias"][1]["reason"] == "call reverted: Error(first)" and "out" not in r["vias"][1]["legs"][0]
 
 
+KEY_URL = "https://node.invalid/v3/KEY0123456789abcdef"
+
+
+@pytest.mark.parametrize("leg", [(T, D, 2 * E18), (W, D, E18)])          # the 1-leg and the 2-leg via
+@pytest.mark.parametrize("text", ["bad key KEY0123456789abcdef", "see node.invalid/v3/KEY0123456789abcdef",
+                                  "key KEY0123​456789abcdef"])
+def test_usd_revert_text_never_echoes_the_rpc_key(node, monkeypatch, leg, text):  # mutant: M83
+    """The revert text of a via is bytes from your node: it gets the same scrub as the node's error text."""
+    p = parity_plans()
+    p[leg] = error(text)
+    node(p)
+    monkeypatch.setenv("BLAZEPHOENIX_RPC_BASE", KEY_URL)
+    r = usd()
+    reason = [v["reason"] for v in r["vias"] if v["status"] != "measured"]
+    assert len(reason) == 1 and reason[0].startswith("call reverted: Error(") and "[redacted]" in reason[0]
+    assert "456789abcdef" not in reason[0].lower()
+
+
+def test_usd_revert_text_withheld_when_a_credential_is_short(node, monkeypatch):  # mutant: M83
+    p = parity_plans()
+    p[(W, D, E18)] = error("bad k a1b")
+    node(p)
+    monkeypatch.setenv("BLAZEPHOENIX_RPC_BASE", "https://node.invalid/rpc?k=a1b")
+    assert usd()["vias"][1]["reason"] == "call reverted (text withheld: it could carry your RPC key)"
+
+
 @pytest.mark.parametrize("raw", [b"", b"\x00" * 31, b"\xff" * 64])
 def test_undecodable_quoter_result_is_not_measured(node, raw):  # mutant: M56 (decode failure wording)
     p = parity_plans()

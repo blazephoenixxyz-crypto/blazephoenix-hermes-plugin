@@ -1,0 +1,366 @@
+{
+ "_doc": "Shared redaction vectors: identical bytes in @blazephoenix/mcp (scripts/fixtures/scrub-vectors.json) and hermes (tests/fixtures/scrub-vectors.json). layer redact: redact(text, secrets) -> string, or null when the text is withheld. layer seal: seal(text, secrets) -> string, never null.",
+ "short": 4,
+ "mark": "[redacted]",
+ "cases": [
+  {
+   "name": "whole url",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "fetch https://rpc.example.org/v2/k3yS3cr3tAbCdEf failed",
+   "expect": "fetch [redacted] failed"
+  },
+  {
+   "name": "url without scheme",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "POST rpc.example.org/v2/k3yS3cr3tAbCdEf: 401",
+   "expect": "POST [redacted]: 401"
+  },
+  {
+   "name": "protocol-relative url",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "at //rpc.example.org/v2/k3yS3cr3tAbCdEf.",
+   "expect": "at //[redacted]."
+  },
+  {
+   "name": "escaped slashes",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "url\":\"https:\\/\\/rpc.example.org\\/v2\\/k3yS3cr3tAbCdEf\"",
+   "expect": "url\":\"https:\\/\\/[redacted]\\/[redacted]\\/[redacted]\""
+  },
+  {
+   "name": "space inside the url",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "call https://rpc.example.org/v2/k3yS3cr3t AbCdEf now",
+   "expect": "call [redacted] now"
+  },
+  {
+   "name": "newline inside the url",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "call https://rpc.example.org/v2/k3yS3c\nr3tAbCdEf now",
+   "expect": "call [redacted] now"
+  },
+  {
+   "name": "bare key",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "invalid key k3yS3cr3tAbCdEf",
+   "expect": "invalid key [redacted]"
+  },
+  {
+   "name": "upper case",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "INVALID KEY K3YS3CR3TABCDEF",
+   "expect": "INVALID KEY [redacted]"
+  },
+  {
+   "name": "key at start and end",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "k3yS3cr3tAbCdEf and k3yS3cr3tAbCdEf",
+   "expect": "[redacted] and [redacted]"
+  },
+  {
+   "name": "key split by zero width space",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "key k3yS3cr\u200b3tAbCdEf",
+   "expect": "key [redacted]"
+  },
+  {
+   "name": "key split by soft hyphen",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "key k3yS3cr\u00ad3tAbCdEf",
+   "expect": "key [redacted]"
+  },
+  {
+   "name": "key split by a tag character",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "key k3yS3c\udb40\udc41r3tAbCdEf",
+   "expect": "key [redacted]"
+  },
+  {
+   "name": "hostname alone",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "connect rpc.example.org:443 refused",
+   "expect": "connect [redacted]:443 refused"
+  },
+  {
+   "name": "percent-decoded segment F1",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/abc%2Fxyz123"
+   ],
+   "text": "key abc/xyz123 bad",
+   "expect": "key [redacted] bad"
+  },
+  {
+   "name": "percent-encoded segment F2",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v3/key$Val9"
+   ],
+   "text": "token key%24Val9 rejected",
+   "expect": "token [redacted] rejected"
+  },
+  {
+   "name": "json-escaped query value F3",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/x?token=ab\"cd12"
+   ],
+   "text": "{\"error\":\"bad token ab\\\"cd12\"}",
+   "expect": "{\"error\":\"bad token [redacted]\"}"
+  },
+  {
+   "name": "html-escaped query value F4",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/x?token=a<b>c'd9"
+   ],
+   "text": "token a&lt;b&gt;c&#39;d9 refused",
+   "expect": "token [redacted] refused"
+  },
+  {
+   "name": "basic auth header F5",
+   "layer": "redact",
+   "secrets": [
+    "https://user9:pa55word@rpc.example.org/"
+   ],
+   "text": "Authorization: Basic dXNlcjk6cGE1NXdvcmQ=",
+   "expect": "Authorization: Basic [redacted]"
+  },
+  {
+   "name": "password alone",
+   "layer": "redact",
+   "secrets": [
+    "https://user9:pa55word@rpc.example.org/"
+   ],
+   "text": "auth pa55word failed",
+   "expect": "auth [redacted] failed"
+  },
+  {
+   "name": "key as a host label",
+   "layer": "redact",
+   "secrets": [
+    "https://k3yS3cr3tAbCdEf.rpc.invalid/"
+   ],
+   "text": "getaddrinfo ENOTFOUND k3yS3cr3tAbCdEf.rpc.invalid",
+   "expect": "getaddrinfo ENOTFOUND [redacted]"
+  },
+  {
+   "name": "key in the query",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/?apikey=k3yS3cr3tAbCdEf"
+   ],
+   "text": "apikey=k3yS3cr3tAbCdEf invalid",
+   "expect": "[redacted] invalid"
+  },
+  {
+   "name": "form-decoded query value",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/?key=ab+cd12"
+   ],
+   "text": "key ab cd12",
+   "expect": "key [redacted]"
+  },
+  {
+   "name": "fragment",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2#fr4gmentKey"
+   ],
+   "text": "echo fr4gmentKey",
+   "expect": "echo [redacted]"
+  },
+  {
+   "name": "second url of a list",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf",
+    "wss://ws.example.net/ws/s3condK3y99"
+   ],
+   "text": "first k3yS3cr3tAbCdEf then s3condK3y99",
+   "expect": "first [redacted] then [redacted]"
+  },
+  {
+   "name": "credential of SHORT-1 withholds",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/?k=a1b"
+   ],
+   "text": "anything at all",
+   "expect": null
+  },
+  {
+   "name": "short password withholds",
+   "layer": "redact",
+   "secrets": [
+    "https://user9:a1b@rpc.example.org/"
+   ],
+   "text": "anything at all",
+   "expect": null
+  },
+  {
+   "name": "credential of SHORT is redacted",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/?k=a1b2"
+   ],
+   "text": "key a1b2 bad",
+   "expect": "key [redacted] bad"
+  },
+  {
+   "name": "short segment only where it stands alone",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v3/abc"
+   ],
+   "text": "invalid key abc for abcdef",
+   "expect": "invalid key [redacted] for abcdef"
+  },
+  {
+   "name": "short segment next to an underscore",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/eth/k3yS3cr3tAbCdEf"
+   ],
+   "text": "eth_chainId failed",
+   "expect": "[redacted]_chainId failed"
+  },
+  {
+   "name": "text with no piece of the url 1",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "execution reverted: STF",
+   "expect": "execution reverted: STF"
+  },
+  {
+   "name": "text with no piece of the url 2",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+   "expect": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  },
+  {
+   "name": "text with no piece of the url 3",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "1500000000000000000",
+   "expect": "1500000000000000000"
+  },
+  {
+   "name": "text with no piece of the url 4",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "{\"code\":-32000,\"message\":\"nonce too low\"}",
+   "expect": "{\"code\":-32000,\"message\":\"nonce too low\"}"
+  },
+  {
+   "name": "no configured url",
+   "layer": "redact",
+   "secrets": [],
+   "text": "fetch https://rpc.example.org/v2/k3yS3cr3tAbCdEf",
+   "expect": "fetch https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+  },
+  {
+   "name": "seal: url without scheme",
+   "layer": "seal",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "symbol rpc.example.org/v2/k3yS3cr3tAbCdEf",
+   "expect": "symbol [redacted]"
+  },
+  {
+   "name": "seal: url split by a newline",
+   "layer": "seal",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "name https://rpc.example.org/v2/k3y\nS3cr3tAbCdEf",
+   "expect": "name [redacted]"
+  },
+  {
+   "name": "seal: html-escaped url",
+   "layer": "seal",
+   "secrets": [
+    "https://rpc.example.org/?a=1&key=k3yS3cr3tAbCdEf"
+   ],
+   "text": "see https://rpc.example.org/?a=1&amp;key=k3yS3cr3tAbCdEf",
+   "expect": "see [redacted]"
+  },
+  {
+   "name": "seal: a chain name that is also a segment stays",
+   "layer": "seal",
+   "secrets": [
+    "https://rpc.example.org/base/k3yS3cr3tAbCdEf"
+   ],
+   "text": "\"chain\":\"base\"",
+   "expect": "\"chain\":\"base\""
+  },
+  {
+   "name": "seal: a bare key is not a composite",
+   "layer": "seal",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "key k3yS3cr3tAbCdEf",
+   "expect": "key k3yS3cr3tAbCdEf"
+  },
+  {
+   "name": "seal: a url with no host",
+   "layer": "seal",
+   "secrets": [
+    "rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "rpc.example.org/v2/k3yS3cr3tAbCdEf",
+   "expect": "rpc.example.org/v2/k3yS3cr3tAbCdEf"
+  }
+ ]
+}
