@@ -325,9 +325,9 @@ def test_scrub_vectors_shared_with_the_mcp_server():
     (scripts/fixtures/scrub-vectors.json): both redactors must give every expected answer."""
     raw = (ROOT / "tests/fixtures/scrub-vectors.json").read_bytes()
     assert __import__("hashlib").sha256(raw).hexdigest() == \
-        "4d96d522c8073cebb1acafcfc75e25b4f60e4c3e1d941ab2219b91ea07108e00"   # pinned in both repos
+        "a9c93336dee2cdeb43e42441a26fd7d2c2d8e1a74ea9062baa75d63186d03d5a"   # pinned in both repos
     vec = json.loads(raw)
-    assert (vec["short"], vec["mark"]) == (bp._SHORT, "[redacted]") and len(vec["cases"]) == 40
+    assert (vec["short"], vec["mark"]) == (bp._SHORT, "[redacted]") and len(vec["cases"]) == 49
     got = [(c["name"], (bp._redact if c["layer"] == "redact" else bp.seal)(c["text"], c["secrets"]))
            for c in vec["cases"]]
     assert got == [(c["name"], c["expect"]) for c in vec["cases"]]
@@ -405,6 +405,52 @@ def test_json_rpc_error_short_decoded_path_segment_removed(monkeypatch):  # muta
     with pytest.raises(bp.BPError) as e:
         bp.rpc("https://node.invalid/v3/a%62c", "eth_chainId", [])
     assert str(e.value).endswith("invalid key [redacted] for abcdef")
+
+
+@pytest.mark.parametrize("text", ["https:\\/\\/rpc.invalid\\/v2\\/KEY0123456789abcdef",                # PHP json_encode
+                                  "{\"url\":\"rpc.invalid\\/v2\\/KEY0123456789abcdef\"}",
+                                  "https:\\/\\/rpc.invalid\\/v2\\/KEY0123456789abcdef?x=1"])
+def test_seal_removes_the_slash_escaped_json_spelling(text):  # mutant: M89
+    """JSON encoders that escape '/' (PHP json_encode) write every '/' as a backslash and a slash: seal removes that spelling too."""
+    out = bp.seal(text, ["https://rpc.invalid/v2/KEY0123456789abcdef"])
+    assert "KEY0" not in out.upper() and "[redacted]" in out
+    assert bp.seal("{\"chain\":\"base\",\"path\":\"\\/base\\/\"}", ["https://rpc.invalid/base/KEY0123456789abcdef"]) \
+        == "{\"chain\":\"base\",\"path\":\"\\/base\\/\"}"                 # still never a lone piece
+
+
+def test_redact_removes_the_slash_escaped_json_spelling():
+    """The node text layer already took the key out piece by piece (host, segments); with the form it takes
+    the whole URL at once."""
+    assert bp._redact("https:\\/\\/rpc.invalid\\/v2\\/KEY0123456789abcdef", ["https://rpc.invalid/v2/KEY0123456789abcdef"]) \
+        == "[redacted]"
+
+
+@pytest.mark.parametrize("text,out", [
+    ("invalid key a​bc", "invalid key [redacted]"),         # zero-width space inside the segment
+    ("invalid key A­BC.", "invalid key [redacted]."),        # soft hyphen, other case
+    ("invalid key ab⁠c​", "invalid key [redacted]​"),
+    ("invalid key abcdef", "invalid key abcdef"),                # inside a longer word: stays
+    ("invalid key xa​bc", "invalid key xa​bc"),        # a letter just before it: stays
+    ("invalid key a​bcd", "invalid key a​bcd"),        # a letter just after it: stays
+])
+def test_short_path_segment_matched_across_gap_characters(text, out):  # mutants: M90, M94
+    """A short segment is compared on the skeleton like every long piece; the stand-alone check reads the
+    characters of the text just before and after the match."""
+    assert bp._redact(text, ["https://node.invalid/v3/abc"]) == out
+
+
+@pytest.mark.parametrize("secret,text,out", [
+    ("https://user9:pa55word@rpc.invalid/v2/KEY0123456789abcdef", "at rpc.invalid/v2/KEY0123456789abcdef.", "at [redacted]."),
+    ("https://user9:pa55word@rpc.invalid/v2/KEY0123456789abcdef", "https://rpc.invalid/v2/KEY0123456789abcdef",
+     "https://[redacted]"),
+    ("https://user9:pa55word@rpc.invalid:8545/v2/KEY0123456789abcdef?x=1", "rpc.invalid:8545/v2/KEY0123456789abcdef?x=1",
+     "[redacted]"),
+    ("https://user9:pa55word@rpc.invalid/v2/KEY0123456789abcdef", "user9:pa55word@rpc.invalid/v2/KEY0123456789abcdef",
+     "[redacted]"),
+])
+def test_seal_removes_host_and_path_without_the_user_info(secret, text, out):  # mutant: M91
+    """A URL configured with user info is also sealed where the answer quotes it without the user info."""
+    assert bp.seal(text, [secret]) == out
 
 
 def test_json_rpc_error_message_not_a_string_is_withheld(monkeypatch):  # mutant: M76

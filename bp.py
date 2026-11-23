@@ -267,6 +267,12 @@ def _skel(s: str) -> tuple:
     return "".join(out), where
 
 
+def _json(s: str) -> list:
+    """s JSON-escaped without its quotes, as json.dumps writes it and with every '/' escaped (PHP json_encode)."""
+    j = json.dumps(s, ensure_ascii=False)[1:-1]
+    return [j, j.replace("/", "\\/")]
+
+
 def _html(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
 
@@ -275,7 +281,7 @@ _FORMS = (   # every written form of a piece the node may quote; a new form is a
     lambda a: [a],                                                                         # F0 as configured
     lambda a: [urllib.parse.unquote(a)],                                                   # F1 percent-decoded
     lambda a: [urllib.parse.quote(urllib.parse.unquote(a), safe="!'()*~-._")],             # F2 percent-encoded
-    lambda a: [json.dumps(x, ensure_ascii=False)[1:-1] for x in (a, urllib.parse.unquote(a))],   # F3 JSON-escaped
+    lambda a: [j for x in (a, urllib.parse.unquote(a)) for j in _json(x)],                # F3 JSON-escaped, '/' plain or escaped
     lambda a: [_html(x) for x in (a, urllib.parse.unquote(a))],                            # F4 HTML-escaped
 )
 
@@ -320,6 +326,21 @@ def _cut(text: str, longs: list) -> str:
     return text
 
 
+def _alone(text: str, k: str) -> str:
+    """text with every match of the skeleton k replaced where it stands alone: no [A-Za-z0-9] in text just
+    before its first or just after its last character."""
+    sk, where = _skel(text)
+    out, last, i = [], 0, sk.find(k)
+    while i >= 0:
+        a, b = where[i], where[i + len(k) - 1] + 1
+        if not any(0 <= j < len(text) and text[j].isascii() and text[j].isalnum() for j in (a - 1, b)):
+            out += [text[last:a], _MARK]
+            last, i = b, sk.find(k, i + len(k))
+        else:
+            i = sk.find(k, i + 1)
+    return "".join(out) + text[last:]
+
+
 def _order(keys) -> list:
     return sorted(keys, key=lambda k: (-len(k), k))
 
@@ -351,7 +372,7 @@ def _redact(text: str, secrets: list) -> str | None:
         shorts |= {s for s in segs if 0 < len(_skel(s)[0]) < _SHORT}
     text = _cut(text, _order(longs))
     for p in sorted(shorts, key=lambda s: (-len(_skel(s)[0]), _skel(s)[0], s)):
-        text = re.sub(rf"(?<![A-Za-z0-9]){re.escape(p)}(?![A-Za-z0-9])", _MARK, text, flags=re.I)
+        text = _alone(text, _skel(p)[0])
     return text
 
 
@@ -370,8 +391,9 @@ def seal(obj, secrets=None):
     for url in _secrets() if secrets is None else secrets:
         p = _split(url)
         if p["host"]:
-            np = p["netloc"] + p["path"]
-            longs |= _longs([url, p["bare"], np, *([f"{np}?{p['query']}"] if p["query"] else [])])
+            longs |= _longs([url, p["bare"]])
+            for np in (p["netloc"] + p["path"], p["netloc"].rpartition("@")[2] + p["path"]):   # with and without user info
+                longs |= _longs([np, *([f"{np}?{p['query']}"] if p["query"] else [])])
     if not longs:
         return obj
     longs = _order(longs)
@@ -638,12 +660,24 @@ def _revert_reason(ret: str) -> str:
     if name:
         try:
             args = abi_decode(["bytes" if t == "string" else t for t in types], b[4:], strict=False)
-            words = [bytes.fromhex(a[2:]).decode("utf-8", "replace")[:200] if t == "string"
+            words = [bytes.fromhex(a[2:]).decode("utf-8", "replace") if t == "string"   # whole: cut after the scrub
                      else str(a).lower() if t == "bool" else str(a) for t, a in zip(types, args)]
             return f"call reverted: {name}({', '.join(words)})"
         except BPError:
             pass
     return f"call reverted (0x{b[:4].hex()})"
+
+
+REVERT_TEXT = 200   # characters of a revert string an answer keeps, counted after the scrub
+_ERROR_HEAD = "call reverted: Error("
+
+
+def _capped(reason: str) -> str:
+    """A scrubbed revert reason with its string cut to REVERT_TEXT characters; the whole reason cut to the
+    same length when the scrub took a word of the frame."""
+    if reason.startswith(_ERROR_HEAD) and reason.endswith(")"):
+        return f"{_ERROR_HEAD}{reason[len(_ERROR_HEAD):-1][:REVERT_TEXT]})"
+    return reason[:len(_ERROR_HEAD) + REVERT_TEXT + 1]
 
 
 def _preview(r, tin: str, tout: str) -> tuple:
@@ -802,10 +836,11 @@ def usd_value(chain, token: str, amount_in, block=None) -> dict:
             out.update(usd=format_units(amt, dd), unitPrice=format_units(amt * 10 ** (dd + 18) // (amt * 10 ** dd), 18))
         return out
     dt, dd, vias = got
-    for v in vias:   # a revert text is bytes from your node: the same question as rpc() asks of its error text
+    for v in vias:   # a revert text is bytes from your node: the same question as rpc() asks of its error text,
+        # on the whole text: a cut first can leave the key less its last characters, which no piece matches
         if "reason" in v:
             clean = _scrub(v["reason"], url)
-            v["reason"] = clean if clean is not None else "call reverted (text withheld: it could carry your RPC key)"
+            v["reason"] = _capped(clean) if clean is not None else "call reverted (text withheld: it could carry your RPC key)"
     measured = [int(v["usd"]) for v in vias if v["status"] == "measured"]
     out.update(blockNumber=str(n), tokenDecimals=dt, dollarDecimals=dd, vias=vias, rpc={"requests": sent[0]})
     if measured:

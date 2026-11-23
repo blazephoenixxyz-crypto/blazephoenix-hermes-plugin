@@ -37,7 +37,7 @@
     "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
    ],
    "text": "url\":\"https:\\/\\/rpc.example.org\\/v2\\/k3yS3cr3tAbCdEf\"",
-   "expect": "url\":\"https:\\/\\/[redacted]\\/[redacted]\\/[redacted]\""
+   "expect": "url\":\"[redacted]\""
   },
   {
    "name": "space inside the url",
@@ -361,6 +361,87 @@
    ],
    "text": "rpc.example.org/v2/k3yS3cr3tAbCdEf",
    "expect": "rpc.example.org/v2/k3yS3cr3tAbCdEf"
+  },
+  {
+   "name": "short segment split by zero width space",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v3/abc"
+   ],
+   "text": "invalid key a\u200bbc",
+   "expect": "invalid key [redacted]"
+  },
+  {
+   "name": "short segment split by soft hyphen, other case",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v3/abc"
+   ],
+   "text": "key A\u00adBC.",
+   "expect": "key [redacted]."
+  },
+  {
+   "name": "short segment with a gap inside a word stays",
+   "layer": "redact",
+   "secrets": [
+    "https://rpc.example.org/v3/abc"
+   ],
+   "text": "key xa\u200bbc a\u200bbcd",
+   "expect": "key xa\u200bbc a\u200bbcd"
+  },
+  {
+   "name": "seal: slash-escaped url",
+   "layer": "seal",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "url\":\"https:\\/\\/rpc.example.org\\/v2\\/k3yS3cr3tAbCdEf\"",
+   "expect": "url\":\"[redacted]\""
+  },
+  {
+   "name": "seal: slash-escaped url without scheme",
+   "layer": "seal",
+   "secrets": [
+    "https://rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "rpc.example.org\\/v2\\/k3yS3cr3tAbCdEf",
+   "expect": "[redacted]"
+  },
+  {
+   "name": "seal: a slash-escaped chain name stays",
+   "layer": "seal",
+   "secrets": [
+    "https://rpc.example.org/base/k3yS3cr3tAbCdEf"
+   ],
+   "text": "\"path\":\"\\/base\\/\"",
+   "expect": "\"path\":\"\\/base\\/\""
+  },
+  {
+   "name": "seal: host and path without the user info",
+   "layer": "seal",
+   "secrets": [
+    "https://user9:pa55word@rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "at rpc.example.org/v2/k3yS3cr3tAbCdEf.",
+   "expect": "at [redacted]."
+  },
+  {
+   "name": "seal: url without the user info",
+   "layer": "seal",
+   "secrets": [
+    "https://user9:pa55word@rpc.example.org/v2/k3yS3cr3tAbCdEf"
+   ],
+   "text": "https://rpc.example.org/v2/k3yS3cr3tAbCdEf",
+   "expect": "https://[redacted]"
+  },
+  {
+   "name": "seal: host, port, path and query without the user info",
+   "layer": "seal",
+   "secrets": [
+    "https://user9:pa55word@rpc.example.org:8545/v2/k3yS3cr3tAbCdEf?x=1"
+   ],
+   "text": "rpc.example.org:8545/v2/k3yS3cr3tAbCdEf?x=1",
+   "expect": "[redacted]"
   }
  ]
 }

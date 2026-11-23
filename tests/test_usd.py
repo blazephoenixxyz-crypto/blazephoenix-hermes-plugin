@@ -311,6 +311,38 @@ def test_usd_revert_text_withheld_when_a_credential_is_short(node, monkeypatch):
     assert usd()["vias"][1]["reason"] == "call reverted (text withheld: it could carry your RPC key)"
 
 
+@pytest.mark.parametrize("pad", [181, 182, 190, 196, 199])     # the key ends at 200 (whole), 201, 209, 215, 218
+def test_usd_revert_text_scrubbed_before_it_is_cut(node, monkeypatch, pad):  # mutant: M88
+    """The 200-character cut of a revert string comes after the scrub: a cut first would leave the key less
+    its last characters, which no piece matches any more."""
+    p = parity_plans()
+    p[(W, D, E18)] = error("x" * pad + "KEY0123456789abcdef")
+    node(p)
+    monkeypatch.setenv("BLAZEPHOENIX_RPC_BASE", KEY_URL)
+    reason = usd()["vias"][1]["reason"]
+    assert reason.startswith("call reverted: Error(" + "x" * pad) and "KEY0" not in reason.upper()
+
+
+@pytest.mark.parametrize("n,kept", [(199, 199), (200, 200), (201, 200), (5000, 200)])
+def test_usd_revert_text_cut_to_200_characters(node, monkeypatch, n, kept):  # mutant: M92
+    """A long revert string from a node with no piece in it keeps its first 200 characters and the frame."""
+    p = parity_plans()
+    p[(W, D, E18)] = error("y" * n)
+    node(p)
+    monkeypatch.setenv("BLAZEPHOENIX_RPC_BASE", KEY_URL)
+    assert usd()["vias"][1]["reason"] == "call reverted: Error(" + "y" * kept + ")"
+
+
+def test_usd_revert_text_cut_when_the_scrub_took_the_frame(node, monkeypatch):  # mutant: M93
+    """A path segment that is also a word of the frame (Error) is removed from it; the text is still cut."""
+    p = parity_plans()
+    p[(W, D, E18)] = error("y" * 5000)
+    node(p)
+    monkeypatch.setenv("BLAZEPHOENIX_RPC_BASE", "https://node.invalid/Error/KEY0123456789abcdef")
+    reason = usd()["vias"][1]["reason"]
+    assert reason == ("call reverted: [redacted](" + "y" * 5000)[:len("call reverted: Error()") + 200]
+
+
 @pytest.mark.parametrize("raw", [b"", b"\x00" * 31, b"\xff" * 64])
 def test_undecodable_quoter_result_is_not_measured(node, raw):  # mutant: M56 (decode failure wording)
     p = parity_plans()
