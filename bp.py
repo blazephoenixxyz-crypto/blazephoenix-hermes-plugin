@@ -14,9 +14,11 @@ Nothing here signs, sends a transaction or touches a private key. Standard libra
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 
@@ -218,40 +220,195 @@ def _http(url: str, body=None, secret: str | None = None):
         raise BPError("network", f"request to {'your RPC' if secret else urllib.parse.urlsplit(url).netloc} failed ({msg})") from None
 
 
+def _rpc_env(cid: int) -> str:
+    return f"BLAZEPHOENIX_RPC_{CHAINS[cid]['key']}"
+
+
 def rpc_url(cid: int) -> str:
     from agent.secret_scope import get_secret
-    name = f"BLAZEPHOENIX_RPC_{CHAINS[cid]['key']}"
+    name = _rpc_env(cid)
     url = (get_secret(name) or "").strip()
     if not url.startswith(("https://", "http://")):
         raise BPError("rpc_required", f"set {name} to your own node URL for {CHAINS[cid]['name']} (any provider)")
     return url
 
 
+def _secrets() -> list:
+    """Every RPC URL configured, one per chain that has one (the same names rpc_url reads)."""
+    from agent.secret_scope import get_secret
+    return [u for u in ((get_secret(_rpc_env(cid)) or "").strip() for cid in CHAINS) if u]
+
+
 _URL = re.compile(r"://[^\s'\"<>]+")
+
+# ---- redaction: one rule shared with the MCP server, pinned by tests/fixtures/scrub-vectors.json ----
+
+_SHORT = 4              # a piece shorter than this (skeleton length) is never searched inside other text
+_MARK = "[redacted]"
+_IGNORABLE = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180D), (0x180F, 0x180F),
+              (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0xE0000, 0xE0FFF))
+
+
+def _gap(c: str) -> bool:
+    """White space, control, format, surrogate or default-ignorable: skipped when text is compared."""
+    return c.isspace() or unicodedata.category(c) in ("Cc", "Cf", "Cs") or any(a <= ord(c) <= b for a, b in _IGNORABLE)
+
+
+def _skel(s: str) -> tuple:
+    """(skeleton, where): s without _gap characters, lower-cased where the lower case is one character;
+    where[i] is the index in s of skeleton[i]."""
+    out, where = [], []
+    for i, c in enumerate(s):
+        if _gap(c):
+            continue
+        low = c.lower()
+        out.append(low if len(low) == 1 else c)
+        where.append(i)
+    return "".join(out), where
+
+
+def _json(s: str) -> list:
+    """s JSON-escaped without its quotes, as json.dumps writes it with non-ASCII as written and as \\uXXXX, each
+    with '/' as written and escaped (PHP json_encode); and s with only its '/' escaped (the MCP server's F3)."""
+    forms = []
+    for ascii_only in (False, True):
+        j = json.dumps(s, ensure_ascii=ascii_only)[1:-1]
+        forms += [j, j.replace("/", "\\/")]
+    return forms + [s.replace("/", "\\/")]
+
+
+def _html(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
+
+
+_FORMS = (   # every written form of a piece the node may quote; a new form is a new entry
+    lambda a: [a],                                                                         # F0 as configured
+    lambda a: [urllib.parse.unquote(a)],                                                   # F1 percent-decoded
+    lambda a: [urllib.parse.quote(urllib.parse.unquote(a), safe="!'()*~-._")],             # F2 percent-encoded
+    lambda a: [j for x in (a, urllib.parse.unquote(a)) for j in _json(x)],                # F3 JSON-escaped (\uXXXX or not), '/' plain or escaped; '/' escaped alone
+    lambda a: [_html(x) for x in (a, urllib.parse.unquote(a))],                            # F4 HTML-escaped
+)
+
+
+def _split(url: str) -> dict:
+    """The parts of a URL as urllib.parse.urlsplit cuts them, without its clean-ups (the MCP server cuts the same)."""
+    rest, i = url, url.find(":")
+    if i > 0 and url[0].isascii() and url[0].isalpha() and all(c.isascii() and (c.isalnum() or c in "+-.") for c in url[:i]):
+        rest = url[i + 1:]
+    netloc = ""
+    if rest[:2] == "//":
+        j = min([k for k in (rest.find(d, 2) for d in "/?#") if k >= 0] or [len(rest)])
+        netloc, rest = rest[2:j], rest[j:]
+    path, _, frag = rest.partition("#")
+    path, _, query = path.partition("?")
+    userinfo, at, hostport = netloc.rpartition("@")
+    user, _, pw = userinfo.partition(":")
+    host = hostport[1:].partition("]")[0] if hostport.startswith("[") else hostport.partition(":")[0]
+    return {"netloc": netloc, "path": path, "query": query, "frag": frag, "user": user, "pw": pw, "at": bool(at),
+            "host": host.lower(), "bare": re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", url)}
+
+
+def _longs(pieces) -> set:
+    return {k for a in pieces if a for form in _FORMS for f in form(a) for k in [_skel(f)[0]] if len(k) >= _SHORT}
+
+
+def _cut(text: str, longs: list) -> str:
+    """text with every match of a skeleton in longs replaced, from its first to its last character."""
+    sk, where = _skel(text)
+    for f in longs:
+        hits, i = [], sk.find(f)
+        while i >= 0:
+            hits.append((where[i], where[i + len(f) - 1] + 1))
+            i = sk.find(f, i + len(f))
+        if hits:
+            out, last = [], 0
+            for a, b in hits:
+                out += [text[last:a], _MARK]
+                last = b
+            text = "".join(out) + text[last:]
+            sk, where = _skel(text)
+    return text
+
+
+def _alone(text: str, k: str) -> str:
+    """text with every match of the skeleton k replaced where it stands alone: no [A-Za-z0-9] in text just
+    before its first or just after its last character."""
+    sk, where = _skel(text)
+    out, last, i = [], 0, sk.find(k)
+    while i >= 0:
+        a, b = where[i], where[i + len(k) - 1] + 1
+        if not any(0 <= j < len(text) and text[j].isascii() and text[j].isalnum() for j in (a - 1, b)):
+            out += [text[last:a], _MARK]
+            last, i = b, sk.find(k, i + len(k))
+        else:
+            i = sk.find(k, i + 1)
+    return "".join(out) + text[last:]
+
+
+def _order(keys) -> list:
+    return sorted(keys, key=lambda k: (-len(k), k))
+
+
+def _redact(text: str, secrets: list) -> str | None:
+    """Text with every piece of every URL in secrets taken out, in every written form (_FORMS, and base64
+    of the user info), compared on the skeleton (_skel). Pieces: the URL, without scheme, netloc, host, path,
+    query, each query value, user, password, fragment, each path segment. A path segment under _SHORT is
+    removed only where it stands alone (not inside a longer word). None when a query value, user,
+    password or fragment is under _SHORT: it cannot be removed safely, so the caller drops the text."""
+    longs, shorts = set(), set()
+    for url in secrets:
+        p = _split(url)
+        creds = []
+        for kv in p["query"].split("&"):
+            if "=" in kv:
+                v = kv.split("=", 1)[1]
+                creds += [v, urllib.parse.unquote(v.replace("+", " "))]
+        creds += [p["user"], p["pw"], p["frag"]]
+        creds = [c for c in creds + [urllib.parse.unquote(c) for c in creds] if c]
+        if any(len(_skel(c)[0]) < _SHORT for c in creds):
+            return None
+        segs = [s for s in p["path"].split("/") if s]
+        segs += [urllib.parse.unquote(s) for s in segs]
+        longs |= _longs([url, p["bare"], p["netloc"], p["host"], p["path"], p["query"], *creds, *segs])
+        if p["at"]:   # an Authorization: Basic header the node may print back
+            basic = base64.b64encode(f"{urllib.parse.unquote(p['user'])}:{urllib.parse.unquote(p['pw'])}".encode()).decode()
+            longs |= {_skel(basic)[0]}                                                      # F5, as sent
+        shorts |= {s for s in segs if 0 < len(_skel(s)[0]) < _SHORT}
+    text = _cut(text, _order(longs))
+    for p in sorted(shorts, key=lambda s: (-len(_skel(s)[0]), _skel(s)[0], s)):
+        text = _alone(text, _skel(p)[0])
+    return text
 
 
 def _scrub(text: str, secret: str) -> str | None:
-    """Node text with the RPC URL taken out: every piece of the URL that can carry a key (path
-    segments raw and decoded, query values, user info, host) is removed, then any URL left keeps
-    only its scheme. A path segment under four characters is removed only where it stands alone
-    (not inside a longer word). None when a query or user-info value is too short to remove
-    safely: the caller then drops the node text altogether."""
-    s = urllib.parse.urlsplit(secret)
-    creds = [v for _, v in urllib.parse.parse_qsl(s.query)]
-    creds += [kv.split("=", 1)[1] for kv in s.query.split("&") if "=" in kv]
-    creds += [s.username or "", s.password or ""]
-    creds += [urllib.parse.unquote(c) for c in creds]
-    creds = [c for c in creds if c]
-    if any(len(c) < 4 for c in creds):
-        return None
-    segs = [p for p in s.path.split("/") if p]
-    parts = [secret, secret.split("://", 1)[-1], s.netloc, s.hostname or "", s.path, s.query, *creds,
-             *segs, *(urllib.parse.unquote(p) for p in segs)]
-    for p in sorted({p for p in parts if len(p) >= 4}, key=len, reverse=True):
-        text = re.sub(re.escape(p), "[redacted]", text, flags=re.I)
-    for p in {p for p in (*segs, *(urllib.parse.unquote(p) for p in segs)) if 0 < len(p) < 4}:
-        text = re.sub(rf"(?<![A-Za-z0-9]){re.escape(p)}(?![A-Za-z0-9])", "[redacted]", text, flags=re.I)
-    return _URL.sub("://[redacted]", text)
+    """Node text with the RPC URL taken out (_redact), then any URL left keeps only its scheme.
+    None: the caller drops the node text altogether."""
+    text = _redact(text, [secret])
+    return None if text is None else _URL.sub("://[redacted]", text)
+
+
+def seal(obj, secrets=None):
+    """obj (dict, list, str) with every configured RPC URL taken out of every string: the URL whole, without
+    its scheme, and host with path (and query), in the forms F0-F4. Never a lone piece, so a chain name that
+    is also a path segment stays; never withholds. The last check on every answer the tools give."""
+    longs = set()
+    for url in _secrets() if secrets is None else secrets:
+        p = _split(url)
+        if p["host"]:
+            longs |= _longs([url, p["bare"]])
+            for np in (p["netloc"] + p["path"], p["netloc"].rpartition("@")[2] + p["path"]):   # with and without user info
+                longs |= _longs([np, *([f"{np}?{p['query']}"] if p["query"] else [])])
+    if not longs:
+        return obj
+    longs = _order(longs)
+
+    def walk(o):
+        if isinstance(o, str):
+            return _cut(o, longs)
+        if isinstance(o, dict):
+            return {k: walk(v) for k, v in o.items()}
+        return [walk(v) for v in o] if isinstance(o, (list, tuple)) else o
+    return walk(obj)
 
 
 def rpc(url: str, method: str, params: list):
@@ -507,12 +664,24 @@ def _revert_reason(ret: str) -> str:
     if name:
         try:
             args = abi_decode(["bytes" if t == "string" else t for t in types], b[4:], strict=False)
-            words = [bytes.fromhex(a[2:]).decode("utf-8", "replace")[:200] if t == "string"
+            words = [bytes.fromhex(a[2:]).decode("utf-8", "replace") if t == "string"   # whole: cut after the scrub
                      else str(a).lower() if t == "bool" else str(a) for t, a in zip(types, args)]
             return f"call reverted: {name}({', '.join(words)})"
         except BPError:
             pass
     return f"call reverted (0x{b[:4].hex()})"
+
+
+REVERT_TEXT = 200   # characters of a revert string an answer keeps, counted after the scrub
+_ERROR_HEAD = "call reverted: Error("
+
+
+def _capped(reason: str) -> str:
+    """A scrubbed revert reason with its string cut to REVERT_TEXT characters; the whole reason cut to the
+    same length when the scrub took a word of the frame."""
+    if reason.startswith(_ERROR_HEAD) and reason.endswith(")"):
+        return f"{_ERROR_HEAD}{reason[len(_ERROR_HEAD):-1][:REVERT_TEXT]})"
+    return reason[:len(_ERROR_HEAD) + REVERT_TEXT + 1]
 
 
 def _preview(r, tin: str, tout: str) -> tuple:
@@ -671,6 +840,11 @@ def usd_value(chain, token: str, amount_in, block=None) -> dict:
             out.update(usd=format_units(amt, dd), unitPrice=format_units(amt * 10 ** (dd + 18) // (amt * 10 ** dd), 18))
         return out
     dt, dd, vias = got
+    for v in vias:   # a revert text is bytes from your node: the same question as rpc() asks of its error text,
+        # on the whole text: a cut first can leave the key less its last characters, which no piece matches
+        if "reason" in v:
+            clean = _scrub(v["reason"], url)
+            v["reason"] = _capped(clean) if clean is not None else "call reverted (text withheld: it could carry your RPC key)"
     measured = [int(v["usd"]) for v in vias if v["status"] == "measured"]
     out.update(blockNumber=str(n), tokenDecimals=dt, dollarDecimals=dd, vias=vias, rpc={"requests": sent[0]})
     if measured:
