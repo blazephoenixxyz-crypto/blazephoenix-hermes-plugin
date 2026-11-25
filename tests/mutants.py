@@ -114,6 +114,8 @@ MUTANTS = {
     "M97 slash escaped alone missing": (r'return forms + [s.replace("/", "\\/")]', "return forms"),
     "M98 slash-escaped form cut into lone pieces": (r'return forms + [s.replace("/", "\\/")]',
                                                     r'return forms + [s.replace("/", "\\/"), *s.split("/")]'),
+    "M99 host labels not redacted": ("*creds, *segs, *labels])", "*creds, *segs])"),
+    "M100 plain-letter host labels redacted": ("if not (h.isascii() and h.isalpha())]", "if h]"),
 }
 
 # Known survivors: these two also survive on main. Kept here so CI fails only on a NEW survivor.

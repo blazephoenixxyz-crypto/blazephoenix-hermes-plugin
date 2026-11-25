@@ -320,6 +320,50 @@ def test_json_rpc_errors_never_echo_the_rpc_key_in_any_written_form(monkeypatch,
     assert gone.lower() not in str(e.value).lower()
 
 
+@pytest.mark.parametrize("secret, echo", [
+    ("https://KEY0123456789abcdef.rpc.invalid/", "no such client KEY0123456789abcdef"),
+    ("https://KEY0123456789abcdef.rpc.invalid/", "client 'key0123456789abcdef' unknown"),
+    ("https://KEY0123456789abcdef.rpc.invalid/", 'client "KEY0123\u200b456789abcdef" unknown'),
+    ("https://user:pw123456@KEY0123456789abcdef.rpc.invalid:8545/", "no such client KEY0123456789abcdef"),
+])
+def test_json_rpc_errors_never_echo_a_key_carried_as_a_host_label(monkeypatch, secret, echo):  # mutant: M99
+    """A provider may put the key in a sub-domain: a node that echoes that label alone (not the whole host)
+    must not put it in the tool output. A label of plain letters (rpc, invalid) is an ordinary word and stays."""
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": echo + " (rpc invalid)"}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc(secret, "eth_chainId", [])
+    assert e.value.code == "rpc_error" and "[redacted]" in str(e.value)
+    assert "456789abcdef" not in str(e.value).lower()
+    assert "(rpc invalid)" in str(e.value)
+
+
+def test_json_rpc_errors_never_echo_a_host_of_plain_letter_labels(monkeypatch):  # mutant: M71
+    """A host whose labels are all plain words is still removed whole (only its lone labels stay)."""
+    secret = "https://user:pw123456@privatenode.rpc.invalid:8545/"
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": "host privatenode.rpc.invalid refused"}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc(secret, "eth_chainId", [])
+    assert "privatenode" not in str(e.value) and "[redacted] refused" in str(e.value)
+
+
+@pytest.mark.parametrize("secret, echo", [
+    ("https://node.invalid/v1/KEY%5Csecret1234", str(["KEY\\secret1234"])),        # repr: two backslashes
+    ("https://node.invalid/v1/KEY%5Csecret1234", "bad key KEY%5Csecret1234"),          # %5C as configured
+    ("https://node.invalid/v1/KEY%5Csecret1234", "bad key KEY%5csecret1234"),          # %5c lower case
+    ("https://node.invalid/v1/KEY%5Csecret1234", "bad key KEY\\\\secret1234"),        # JSON-escaped
+    ("https://node.invalid/rpc?key=KEY%5Csecret1234", str(["KEY\\secret1234"])),   # query value
+])
+def test_json_rpc_errors_never_echo_an_escaped_backslash_key_in_a_str_message(monkeypatch, secret, echo):  # mutant: M78
+    """A str message (not only a list) that writes a backslash of the key escaped (two backslashes, as
+    repr/str of a list or JSON writes it) or percent-encoded (%5C) is redacted, not passed through."""
+    assert isinstance(echo, str)
+    monkeypatch.setattr(bp, "_http", lambda *a, **k: {"error": {"message": echo}})
+    with pytest.raises(bp.BPError) as e:
+        bp.rpc(secret, "eth_chainId", [])
+    assert e.value.code == "rpc_error" and "[redacted]" in str(e.value)
+    assert "secret1234" not in str(e.value).lower()
+
+
 def test_scrub_vectors_shared_with_the_mcp_server():
     """tests/fixtures/scrub-vectors.json holds the same bytes as the MCP server's copy
     (scripts/fixtures/scrub-vectors.json): both redactors must give every expected answer."""

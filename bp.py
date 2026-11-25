@@ -352,9 +352,11 @@ def _order(keys) -> list:
 def _redact(text: str, secrets: list) -> str | None:
     """Text with every piece of every URL in secrets taken out, in every written form (_FORMS, and base64
     of the user info), compared on the skeleton (_skel). Pieces: the URL, without scheme, netloc, host, path,
-    query, each query value, user, password, fragment, each path segment. A path segment under _SHORT is
-    removed only where it stands alone (not inside a longer word). None when a query value, user,
-    password or fragment is under _SHORT: it cannot be removed safely, so the caller drops the text."""
+    query, each query value, user, password, fragment, each path segment, each host label that is not
+    only ASCII letters (a word such as rpc or invalid stays; a label under _SHORT is never searched).
+    A path segment under _SHORT is removed only where it stands alone (not inside a longer word). None
+    when a query value, user, password or fragment is under _SHORT: it cannot be removed safely, so the
+    caller drops the text."""
     longs, shorts = set(), set()
     for url in secrets:
         p = _split(url)
@@ -369,7 +371,8 @@ def _redact(text: str, secrets: list) -> str | None:
             return None
         segs = [s for s in p["path"].split("/") if s]
         segs += [urllib.parse.unquote(s) for s in segs]
-        longs |= _longs([url, p["bare"], p["netloc"], p["host"], p["path"], p["query"], *creds, *segs])
+        labels = [h for h in p["host"].split(".") if not (h.isascii() and h.isalpha())]   # a key as a sub-domain
+        longs |= _longs([url, p["bare"], p["netloc"], p["host"], p["path"], p["query"], *creds, *segs, *labels])
         if p["at"]:   # an Authorization: Basic header the node may print back
             basic = base64.b64encode(f"{urllib.parse.unquote(p['user'])}:{urllib.parse.unquote(p['pw'])}".encode()).decode()
             longs |= {_skel(basic)[0]}                                                      # F5, as sent
